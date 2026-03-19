@@ -26,7 +26,7 @@ page = st.sidebar.radio("Navigate", [
     "Odds Comparison",
     "Team Comparison",
     "Backtest",
-    "Totals/Props",
+    "Injury & Weather Impact",
     "Model Performance",
 ])
 
@@ -75,9 +75,21 @@ elif page == "Backtest":
     from dashboard.backtest import render
     render()
 
-elif page == "Totals/Props":
-    st.title("📈 Totals / Over-Under Props")
-    st.write("Coming soon: over/under predictions for each game, model vs. posted line.")
+elif page == "Injury & Weather Impact":
+    st.title("🏥 Injury & Weather Impact")
+    st.info("See how injuries, weather, and travel affect game predictions.")
+    st.subheader("Feature Impact on Model")
+    st.write("""
+    The model incorporates these contextual factors:
+    - **Injuries**: Total WAR on the Injured List for each team
+    - **Weather**: Temperature, wind speed/direction, humidity, barometric pressure
+    - **Travel**: Distance traveled by away team, timezone change
+    - **Stadium**: Elevation (Coors Field effect), dome vs. open-air
+    - **Schedule**: Season progression, day/night, day of week, April cold starts vs. September push
+    - **Roster churn**: Recent trades, call-ups, and DFA/releases
+    """)
+    st.write("Once the model is trained, this page will show how each factor "
+             "shifts win probability for today's games.")
 
 elif page == "Model Performance":
     st.title("📉 Model Performance")

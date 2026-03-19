@@ -1,7 +1,20 @@
 """Feature engineering: raw data -> master.csv -> ml_ready.csv.
 
-Transforms scraped game results, team stats, and pitcher stats into
-ML-ready matchup features using rolling windows and diff/ratio construction.
+Transforms scraped game results, team stats, pitcher stats, batter stats,
+weather data, injury/trade reports, and stadium metadata into ML-ready
+matchup features.
+
+Feature groups:
+1. Rolling team performance (10/20/40 game windows)
+2. Starting pitcher season stats
+3. Team batting aggregate stats (from roster-level batter data)
+4. Weather at game location (temp, wind, humidity, pressure)
+5. Travel distance & timezone change for away team
+6. Injury/IL impact (total WAR on IL for each team)
+7. Trade/roster churn (recent acquisitions)
+8. Time of day, day of week, season progression
+9. Stadium effects (elevation, dome/open-air)
+10. Diff/ratio matchup features across all of the above
 """
 
 import sys
@@ -13,19 +26,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.helpers import get_logger, DATA_RAW, DATA_PROCESSED
 from utils.data_cleaning import normalize_team_name, safe_float
+from utils.stadium_data import (
+    travel_distance, timezone_change, is_dome_or_retractable,
+    elevation_ft, STADIUMS,
+)
 
 logger = get_logger("feature_engineering")
 
 ROLLING_WINDOWS = [10, 20, 40]
 
-# Team batting stats to compute rolling averages for
-TEAM_BAT_ROLLING = ["runs", "hits", "hr", "bb", "so", "sb", "obp", "slg", "ops"]
-# Team pitching stats to compute rolling averages for
-TEAM_PITCH_ROLLING = ["runs_allowed", "era", "whip", "k9", "bb9", "hr9"]
 
+# ── Data Loaders ─────────────────────────────────────────────────────────
 
 def load_games() -> pd.DataFrame:
-    """Load and clean game results."""
     path = DATA_RAW / "games.csv"
     if not path.exists():
         logger.error(f"Games file not found: {path}")
@@ -36,12 +49,9 @@ def load_games() -> pd.DataFrame:
     df = df.dropna(subset=["date", "home_team", "away_team"])
     df = df.sort_values("date").reset_index(drop=True)
 
-    # Ensure numeric
     df["home_runs"] = pd.to_numeric(df["home_runs"], errors="coerce")
     df["away_runs"] = pd.to_numeric(df["away_runs"], errors="coerce")
     df["home_win"] = pd.to_numeric(df["home_win"], errors="coerce")
-
-    # Filter out incomplete rows
     df = df.dropna(subset=["home_runs", "away_runs", "home_win"])
 
     logger.info(f"Loaded {len(df)} games")
@@ -49,24 +59,51 @@ def load_games() -> pd.DataFrame:
 
 
 def load_pitchers() -> pd.DataFrame:
-    """Load pitcher season stats."""
     path = DATA_RAW / "pitchers.csv"
     if not path.exists():
-        logger.warning("Pitchers file not found. Proceeding without pitcher features.")
+        logger.warning("No pitchers.csv — skipping pitcher features")
         return pd.DataFrame()
-
     df = pd.read_csv(path)
     logger.info(f"Loaded {len(df)} pitcher-season rows")
     return df
 
 
-def compute_rolling_team_stats(games: pd.DataFrame) -> pd.DataFrame:
-    """Compute rolling window stats for each team at each game date.
+def load_batters() -> pd.DataFrame:
+    path = DATA_RAW / "batters.csv"
+    if not path.exists():
+        logger.warning("No batters.csv — skipping batter features")
+        return pd.DataFrame()
+    df = pd.read_csv(path)
+    logger.info(f"Loaded {len(df)} batter-season rows")
+    return df
 
-    CRITICAL: Uses .shift(1) to avoid data leakage -- only uses games
-    prior to the current one.
-    """
-    # Build a per-team game log
+
+def load_weather() -> pd.DataFrame:
+    path = DATA_RAW / "weather.csv"
+    if not path.exists():
+        logger.warning("No weather.csv — skipping weather features")
+        return pd.DataFrame()
+    df = pd.read_csv(path)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    logger.info(f"Loaded {len(df)} weather records")
+    return df
+
+
+def load_injuries() -> pd.DataFrame:
+    path = DATA_RAW / "injuries.csv"
+    if not path.exists():
+        logger.warning("No injuries.csv — skipping injury features")
+        return pd.DataFrame()
+    df = pd.read_csv(path)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    logger.info(f"Loaded {len(df)} injury/transaction records")
+    return df
+
+
+# ── Feature Builders ─────────────────────────────────────────────────────
+
+def compute_rolling_team_stats(games: pd.DataFrame) -> pd.DataFrame:
+    """Rolling window stats per team. Shifted by 1 to prevent leakage."""
     home_logs = games[["date", "home_team", "home_runs", "away_runs", "home_win"]].copy()
     home_logs.columns = ["date", "team", "runs", "runs_allowed", "won"]
 
@@ -76,207 +113,420 @@ def compute_rolling_team_stats(games: pd.DataFrame) -> pd.DataFrame:
 
     team_log = pd.concat([home_logs, away_logs], ignore_index=True)
     team_log = team_log.sort_values(["team", "date"]).reset_index(drop=True)
-
-    # Derived stats per game
     team_log["run_diff"] = team_log["runs"] - team_log["runs_allowed"]
 
-    # Compute rolling stats for each window, shifted by 1 to prevent leakage
     rolling_dfs = []
     for window in ROLLING_WINDOWS:
         grouped = team_log.groupby("team")
+        roll = pd.DataFrame({"date": team_log["date"], "team": team_log["team"]})
 
-        roll = pd.DataFrame()
-        roll["date"] = team_log["date"]
-        roll["team"] = team_log["team"]
-
-        # Rolling means (shifted)
-        roll[f"roll{window}_runs"] = grouped["runs"].transform(
-            lambda x: x.shift(1).rolling(window, min_periods=3).mean()
-        )
-        roll[f"roll{window}_runs_allowed"] = grouped["runs_allowed"].transform(
-            lambda x: x.shift(1).rolling(window, min_periods=3).mean()
-        )
-        roll[f"roll{window}_run_diff"] = grouped["run_diff"].transform(
-            lambda x: x.shift(1).rolling(window, min_periods=3).mean()
-        )
-        roll[f"roll{window}_win_pct"] = grouped["won"].transform(
-            lambda x: x.shift(1).rolling(window, min_periods=3).mean()
-        )
-
+        for col in ["runs", "runs_allowed", "run_diff", "won"]:
+            roll[f"roll{window}_{col}"] = grouped[col].transform(
+                lambda x: x.shift(1).rolling(window, min_periods=3).mean()
+            )
         rolling_dfs.append(roll)
 
-    # Merge all rolling windows
     result = rolling_dfs[0]
     for rdf in rolling_dfs[1:]:
         result = result.merge(rdf, on=["date", "team"], how="outer")
 
     # Season-to-date stats
-    team_log["game_num"] = team_log.groupby(["team", team_log["date"].dt.year]).cumcount() + 1
-    grouped = team_log.groupby(["team", team_log["date"].dt.year])
-    team_log["szn_runs_pg"] = grouped["runs"].transform(
-        lambda x: x.shift(1).expanding().mean()
-    )
-    team_log["szn_ra_pg"] = grouped["runs_allowed"].transform(
-        lambda x: x.shift(1).expanding().mean()
-    )
-    team_log["szn_win_pct"] = grouped["won"].transform(
-        lambda x: x.shift(1).expanding().mean()
-    )
+    year_col = team_log["date"].dt.year
+    team_log["game_num"] = team_log.groupby(["team", year_col]).cumcount() + 1
+    szn_grouped = team_log.groupby(["team", year_col])
+
+    team_log["szn_runs_pg"] = szn_grouped["runs"].transform(lambda x: x.shift(1).expanding().mean())
+    team_log["szn_ra_pg"] = szn_grouped["runs_allowed"].transform(lambda x: x.shift(1).expanding().mean())
+    team_log["szn_win_pct"] = szn_grouped["won"].transform(lambda x: x.shift(1).expanding().mean())
 
     result = result.merge(
         team_log[["date", "team", "game_num", "szn_runs_pg", "szn_ra_pg", "szn_win_pct"]],
-        on=["date", "team"],
-        how="left"
+        on=["date", "team"], how="left"
     )
-
-    # Deduplicate (a team can play a doubleheader)
     result = result.drop_duplicates(subset=["date", "team"], keep="last")
-
     return result
 
 
 def build_pitcher_features(pitchers: pd.DataFrame) -> pd.DataFrame:
-    """Build per-pitcher season features for matchup merging."""
+    """Per-pitcher season-level features."""
     if pitchers.empty:
         return pd.DataFrame()
 
-    # Select key columns and rename
     cols_map = {
-        "player_id": "sp_id",
-        "year_id": "year",
-        "team_name_abbr": "team",
-        "p_earned_run_avg": "sp_era",
-        "p_fip": "sp_fip",
-        "p_whip": "sp_whip",
-        "p_so_per_nine": "sp_k9",
-        "p_bb_per_nine": "sp_bb9",
-        "p_hr_per_nine": "sp_hr9",
-        "p_ip": "sp_ip",
-        "p_war": "sp_war",
-        "p_w": "sp_wins",
-        "p_l": "sp_losses",
+        "player_id": "sp_id", "year_id": "year", "team_name_abbr": "team",
+        "p_earned_run_avg": "sp_era", "p_fip": "sp_fip", "p_whip": "sp_whip",
+        "p_so_per_nine": "sp_k9", "p_bb_per_nine": "sp_bb9",
+        "p_hr_per_nine": "sp_hr9", "p_ip": "sp_ip", "p_war": "sp_war",
+        "p_w": "sp_wins", "p_l": "sp_losses",
         "p_strikeouts_per_base_on_balls": "sp_k_bb",
-        "p_earned_run_avg_plus": "sp_era_plus",
-        "p_gs": "sp_gs",
+        "p_earned_run_avg_plus": "sp_era_plus", "p_gs": "sp_gs",
     }
-
     available = [c for c in cols_map if c in pitchers.columns]
     pdf = pitchers[available].rename(columns={c: cols_map[c] for c in available}).copy()
-
-    # Convert types
     for col in pdf.columns:
         if col not in ("sp_id", "team", "year"):
             pdf[col] = pd.to_numeric(pdf[col], errors="coerce")
-
-    if "year" in pdf.columns:
-        pdf["year"] = pdf["year"].astype(int, errors="ignore")
-
     return pdf
 
 
-def build_matchup_features(games: pd.DataFrame, rolling_stats: pd.DataFrame,
-                           pitcher_features: pd.DataFrame) -> pd.DataFrame:
-    """Merge team rolling stats and pitcher stats into game-level matchup features.
+def build_team_batter_aggregates(batters: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate batter stats per team-season (lineup strength proxy)."""
+    if batters.empty:
+        return pd.DataFrame()
 
-    Then compute diff/ratio features between home and away.
+    num_cols = {
+        "b_war": "team_bat_war", "b_hr": "team_bat_hr",
+        "b_rbi": "team_bat_rbi", "b_sb": "team_bat_sb",
+        "b_batting_avg": "team_bat_avg", "b_onbase_perc": "team_bat_obp",
+        "b_slugging_perc": "team_bat_slg", "b_onbase_plus_slugging": "team_bat_ops",
+        "b_onbase_plus_slugging_plus": "team_bat_ops_plus",
+    }
+
+    for col in num_cols:
+        if col in batters.columns:
+            batters[col] = pd.to_numeric(batters[col], errors="coerce")
+
+    available = [c for c in num_cols if c in batters.columns]
+    if not available:
+        return pd.DataFrame()
+
+    # Sum counting stats, weighted-average rate stats
+    sum_stats = [c for c in available if c in ("b_war", "b_hr", "b_rbi", "b_sb")]
+    rate_stats = [c for c in available if c not in sum_stats]
+
+    agg_dict = {}
+    for c in sum_stats:
+        agg_dict[c] = "sum"
+    for c in rate_stats:
+        agg_dict[c] = "mean"  # approximate; proper weighting would use PA
+
+    grouped = batters.groupby(["team_name_abbr", "year_id"]).agg(agg_dict).reset_index()
+    grouped = grouped.rename(columns={"team_name_abbr": "team", "year_id": "year"})
+    grouped = grouped.rename(columns=num_cols)
+
+    for col in grouped.columns:
+        if col not in ("team", "year"):
+            grouped[col] = pd.to_numeric(grouped[col], errors="coerce")
+
+    return grouped
+
+
+def build_weather_features(games: pd.DataFrame, weather: pd.DataFrame) -> pd.DataFrame:
+    """Merge weather data into games and create weather-aware features."""
+    if weather.empty:
+        return games
+
+    weather_cols = [
+        "temperature_2m", "relative_humidity_2m", "precipitation",
+        "wind_speed_10m", "wind_direction_10m", "surface_pressure",
+    ]
+    merge_cols = ["date", "home_team"]
+    avail = [c for c in weather_cols if c in weather.columns]
+    weather_sub = weather[merge_cols + avail].copy()
+
+    # Rename for clarity
+    rename = {
+        "temperature_2m": "wx_temp_f",
+        "relative_humidity_2m": "wx_humidity",
+        "precipitation": "wx_precip_in",
+        "wind_speed_10m": "wx_wind_mph",
+        "wind_direction_10m": "wx_wind_dir",
+        "surface_pressure": "wx_pressure_hpa",
+    }
+    weather_sub = weather_sub.rename(columns={k: v for k, v in rename.items() if k in weather_sub.columns})
+
+    games = games.merge(weather_sub, on=merge_cols, how="left")
+
+    # Weather relevance flag: weather matters less in domed stadiums
+    games["wx_outdoor"] = games["home_team"].apply(
+        lambda t: 0 if is_dome_or_retractable(t) else 1
+    )
+
+    # Interaction: outdoor weather effects
+    if "wx_temp_f" in games.columns:
+        games["wx_temp_outdoor"] = games["wx_temp_f"] * games["wx_outdoor"]
+    if "wx_wind_mph" in games.columns:
+        games["wx_wind_outdoor"] = games["wx_wind_mph"] * games["wx_outdoor"]
+
+    return games
+
+
+def build_travel_features(games: pd.DataFrame) -> pd.DataFrame:
+    """Add travel distance, timezone change, and rest-day features."""
+    games["travel_dist_miles"] = games.apply(
+        lambda r: travel_distance(r["away_team"], r["home_team"]), axis=1
+    )
+    games["tz_change_hours"] = games.apply(
+        lambda r: timezone_change(r["away_team"], r["home_team"]), axis=1
+    )
+    games["tz_change_abs"] = games["tz_change_hours"].abs()
+
+    # Stadium elevation (Coors Field effect)
+    games["stadium_elevation_ft"] = games["home_team"].apply(elevation_ft)
+    games["is_coors"] = (games["home_team"] == "COL").astype(int)
+
+    return games
+
+
+def build_injury_features(games: pd.DataFrame, injuries: pd.DataFrame,
+                          pitchers: pd.DataFrame, batters: pd.DataFrame) -> pd.DataFrame:
+    """Compute team-level injury impact: total WAR currently on IL at game date.
+
+    For each game, look at IL placements and activations before the game date
+    to determine which players are on IL, then sum their WAR as an injury cost.
     """
-    # Merge home team rolling stats
-    home_stats = rolling_stats.copy()
-    home_cols = {c: f"home_{c}" for c in home_stats.columns if c not in ("date", "team")}
-    home_stats = home_stats.rename(columns=home_cols)
-    home_stats = home_stats.rename(columns={"team": "home_team"})
+    if injuries.empty:
+        logger.info("No injury data — skipping injury features")
+        games["home_il_war"] = 0.0
+        games["away_il_war"] = 0.0
+        games["diff_il_war"] = 0.0
+        return games
 
-    games = games.merge(home_stats, on=["date", "home_team"], how="left")
+    # Build a WAR lookup: player_id -> season WAR
+    war_lookup = {}
+    for df, war_col in [(pitchers, "p_war"), (batters, "b_war")]:
+        if df.empty or war_col not in df.columns:
+            continue
+        for _, row in df.iterrows():
+            pid = row.get("player_id", "")
+            yr = row.get("year_id", "")
+            war = safe_float(row.get(war_col), 0)
+            if pid and yr:
+                war_lookup[(pid, str(yr))] = war_lookup.get((pid, str(yr)), 0) + war
 
-    # Merge away team rolling stats
-    away_stats = rolling_stats.copy()
-    away_cols = {c: f"away_{c}" for c in away_stats.columns if c not in ("date", "team")}
-    away_stats = away_stats.rename(columns=away_cols)
-    away_stats = away_stats.rename(columns={"team": "away_team"})
+    # Build IL status per team per date
+    il_placements = injuries[injuries["tx_type"] == "il_placement"].copy()
+    il_activations = injuries[injuries["tx_type"] == "il_activation"].copy()
 
-    games = games.merge(away_stats, on=["date", "away_team"], how="left")
+    def compute_il_war(team: str, game_date, year: int) -> float:
+        """Sum WAR of players on IL for a team at a given date."""
+        placed = il_placements[
+            (il_placements["team"] == team) &
+            (il_placements["date"] <= game_date)
+        ]
+        activated = il_activations[
+            (il_activations["team"] == team) &
+            (il_activations["date"] <= game_date)
+        ]
 
-    # Merge starting pitcher features (by player_id/URL matching)
-    # This requires the games.csv to have sp_id or sp_url columns
-    # For now, we merge by team + year as a fallback
-    if not pitcher_features.empty and "home_sp" in games.columns:
-        # TODO: Implement direct pitcher-to-game matching via player ID
-        # For MVP, use team's aggregate pitching stats from rolling windows
-        pass
+        # Players currently on IL = placed but not yet activated
+        placed_ids = set(placed["player_id"].dropna())
+        activated_ids = set(activated["player_id"].dropna())
+        on_il = placed_ids - activated_ids
 
-    # Build diff features (home - away)
-    stat_cols = [c for c in games.columns if c.startswith("home_") and c != "home_team"
-                 and not c.endswith("_team") and not c.startswith("home_sp")]
+        total_war = sum(war_lookup.get((pid, str(year)), 0) for pid in on_il)
+        return total_war
 
-    for home_col in stat_cols:
-        suffix = home_col.replace("home_", "")
-        away_col = f"away_{suffix}"
-        if away_col in games.columns:
-            games[f"diff_{suffix}"] = games[home_col] - games[away_col]
+    # This is expensive for large datasets — compute in batches
+    home_il = []
+    away_il = []
+    for _, game in games.iterrows():
+        yr = game["date"].year
+        home_il.append(compute_il_war(game["home_team"], game["date"], yr))
+        away_il.append(compute_il_war(game["away_team"], game["date"], yr))
 
-            # Ratio features (avoid division by zero)
-            games[f"ratio_{suffix}"] = games.apply(
-                lambda r: r[home_col] / r[away_col]
-                if pd.notna(r[away_col]) and r[away_col] != 0
-                else 1.0,
-                axis=1
-            )
+    games["home_il_war"] = home_il
+    games["away_il_war"] = away_il
+    games["diff_il_war"] = games["home_il_war"] - games["away_il_war"]
 
-    # Contextual features
+    return games
+
+
+def build_trade_features(games: pd.DataFrame, injuries: pd.DataFrame) -> pd.DataFrame:
+    """Compute recent trade/roster churn features.
+
+    Teams that just made a big trade or call-up may be disrupted or boosted.
+    """
+    if injuries.empty:
+        games["home_recent_trades"] = 0
+        games["away_recent_trades"] = 0
+        games["home_recent_callups"] = 0
+        games["away_recent_callups"] = 0
+        return games
+
+    trades = injuries[injuries["tx_type"] == "trade"]
+    callups = injuries[injuries["tx_type"] == "callup"]
+
+    def count_recent(tx_df: pd.DataFrame, team: str, date, days: int = 7) -> int:
+        cutoff = date - pd.Timedelta(days=days)
+        return len(tx_df[(tx_df["team"] == team) & (tx_df["date"] >= cutoff) & (tx_df["date"] <= date)])
+
+    home_trades = []
+    away_trades = []
+    home_callups = []
+    away_callups = []
+
+    for _, game in games.iterrows():
+        d = game["date"]
+        home_trades.append(count_recent(trades, game["home_team"], d))
+        away_trades.append(count_recent(trades, game["away_team"], d))
+        home_callups.append(count_recent(callups, game["home_team"], d))
+        away_callups.append(count_recent(callups, game["away_team"], d))
+
+    games["home_recent_trades"] = home_trades
+    games["away_recent_trades"] = away_trades
+    games["home_recent_callups"] = home_callups
+    games["away_recent_callups"] = away_callups
+    games["diff_recent_trades"] = games["home_recent_trades"] - games["away_recent_trades"]
+    games["diff_recent_callups"] = games["home_recent_callups"] - games["away_recent_callups"]
+
+    return games
+
+
+def build_time_features(games: pd.DataFrame) -> pd.DataFrame:
+    """Time-of-day, day-of-week, season progression features."""
     games["day_of_week"] = games["date"].dt.dayofweek
     games["month"] = games["date"].dt.month
     games["is_weekend"] = games["day_of_week"].isin([5, 6]).astype(int)
+
+    # Season progression (0 = opening day, 1 = game 162)
+    # Use game_num from rolling stats if available, else approximate
+    if "home_game_num" in games.columns:
+        games["season_pct"] = games["home_game_num"] / 162.0
+    else:
+        # Approximate: day of year relative to ~Mar 28 through Sep 28
+        day_of_year = games["date"].dt.dayofyear
+        games["season_pct"] = ((day_of_year - 87) / 185.0).clip(0, 1)
+
+    # Is it April (early season, small samples, cold weather)?
+    games["is_april"] = (games["month"] == 4).astype(int)
+    # Is it September+ (expanded rosters, playoff push)?
+    games["is_sept_plus"] = (games["month"] >= 9).astype(int)
+
+    return games
+
+
+# ── Matchup Feature Construction ─────────────────────────────────────────
+
+def build_matchup_diffs(games: pd.DataFrame) -> pd.DataFrame:
+    """Build diff/ratio features between home and away stats."""
+    home_cols = [c for c in games.columns
+                 if c.startswith("home_") and c != "home_team"
+                 and not c.endswith(("_team", "_sp", "_sp_url"))]
+
+    for home_col in home_cols:
+        suffix = home_col.replace("home_", "")
+        away_col = f"away_{suffix}"
+        if away_col in games.columns:
+            h = pd.to_numeric(games[home_col], errors="coerce")
+            a = pd.to_numeric(games[away_col], errors="coerce")
+            games[f"diff_{suffix}"] = h - a
+            games[f"ratio_{suffix}"] = np.where(
+                (a != 0) & a.notna(), h / a, 1.0
+            )
 
     return games
 
 
 def create_ml_ready(master: pd.DataFrame) -> pd.DataFrame:
-    """Select only ML features + target + date for training."""
+    """Select ML features + target + identifiers for training."""
     feature_cols = [c for c in master.columns
                     if c.startswith(("diff_", "ratio_"))
-                    or c in ("day_of_week", "month", "is_weekend")]
+                    or c in (
+                        "day_of_week", "month", "is_weekend", "season_pct",
+                        "is_april", "is_sept_plus",
+                        "travel_dist_miles", "tz_change_abs", "tz_change_hours",
+                        "stadium_elevation_ft", "is_coors",
+                        "wx_temp_f", "wx_humidity", "wx_precip_in",
+                        "wx_wind_mph", "wx_wind_dir", "wx_pressure_hpa",
+                        "wx_outdoor", "wx_temp_outdoor", "wx_wind_outdoor",
+                    )]
 
     target_col = "home_win"
-    date_col = "date"
+    id_cols = ["date", "home_team", "away_team"]
 
     available = [c for c in feature_cols if c in master.columns]
-    ml_df = master[available + [target_col, date_col]].copy()
+
+    # Keep id columns for backtest merge, but don't train on them
+    ml_df = master[available + [target_col] + id_cols].copy()
 
     # Drop rows with too many NaN features
-    thresh = len(available) * 0.5  # need at least 50% of features
-    ml_df = ml_df.dropna(thresh=int(thresh) + 2)  # +2 for target and date
+    thresh = len(available) * 0.4  # need at least 40% of features
+    ml_df = ml_df.dropna(thresh=int(thresh) + len(id_cols) + 1)
 
     logger.info(f"ML-ready dataset: {len(ml_df)} rows, {len(available)} features")
+    logger.info(f"Feature groups: {len([c for c in available if c.startswith('diff_')])} diffs, "
+                f"{len([c for c in available if c.startswith('ratio_')])} ratios, "
+                f"{len([c for c in available if not c.startswith(('diff_', 'ratio_'))])} contextual")
     return ml_df
 
 
+# ── Main Pipeline ────────────────────────────────────────────────────────
+
 def main():
-    # Step 1: Load raw data
+    # Step 1: Load all raw data
     games = load_games()
     if games.empty:
         logger.error("No games data. Run scraper/scrape_games.py first.")
         return
 
     pitchers = load_pitchers()
+    batters = load_batters()
+    weather = load_weather()
+    injuries = load_injuries()
 
-    # Step 2: Compute rolling team stats
-    logger.info("Computing rolling team statistics...")
+    # Step 2: Rolling team performance
+    logger.info("Computing rolling team stats...")
     rolling_stats = compute_rolling_team_stats(games)
 
-    # Step 3: Build pitcher features
-    pitcher_features = build_pitcher_features(pitchers)
+    # Step 3: Merge home/away rolling stats
+    logger.info("Merging team rolling stats...")
+    for prefix, team_col in [("home", "home_team"), ("away", "away_team")]:
+        stats = rolling_stats.copy()
+        rename = {c: f"{prefix}_{c}" for c in stats.columns if c not in ("date", "team")}
+        stats = stats.rename(columns=rename).rename(columns={"team": team_col})
+        games = games.merge(stats, on=["date", team_col], how="left")
 
-    # Step 4: Build matchup features
-    logger.info("Building matchup features...")
-    master = build_matchup_features(games, rolling_stats, pitcher_features)
+    # Step 4: Pitcher features (season-level, merged by team+year)
+    logger.info("Building pitcher features...")
+    pitcher_feats = build_pitcher_features(pitchers)
+    # TODO: Direct SP-to-game matching when game-level SP data is available
 
-    # Step 5: Save master
+    # Step 5: Batter aggregate features (team-season level)
+    logger.info("Building batter aggregate features...")
+    batter_aggs = build_team_batter_aggregates(batters)
+    if not batter_aggs.empty:
+        for prefix, team_col in [("home", "home_team"), ("away", "away_team")]:
+            ba = batter_aggs.copy()
+            rename = {c: f"{prefix}_{c}" for c in ba.columns if c not in ("team", "year")}
+            ba = ba.rename(columns=rename).rename(columns={"team": team_col})
+            ba["year"] = pd.to_numeric(ba["year"], errors="coerce")
+            games["_year"] = games["date"].dt.year
+            games = games.merge(ba, left_on=[team_col, "_year"], right_on=[team_col, "year"],
+                                how="left", suffixes=("", f"_{prefix}_bat"))
+            games = games.drop(columns=["year", "_year"], errors="ignore")
+
+    # Step 6: Weather features
+    logger.info("Building weather features...")
+    games = build_weather_features(games, weather)
+
+    # Step 7: Travel / distance features
+    logger.info("Building travel features...")
+    games = build_travel_features(games)
+
+    # Step 8: Injury impact features
+    logger.info("Building injury features...")
+    games = build_injury_features(games, injuries, pitchers, batters)
+
+    # Step 9: Trade/roster churn features
+    logger.info("Building trade/roster features...")
+    games = build_trade_features(games, injuries)
+
+    # Step 10: Time / schedule features
+    logger.info("Building time features...")
+    games = build_time_features(games)
+
+    # Step 11: Build diff/ratio matchup features
+    logger.info("Building matchup diff/ratio features...")
+    games = build_matchup_diffs(games)
+
+    # Step 12: Save master
     master_path = DATA_PROCESSED / "master.csv"
-    master.to_csv(master_path, index=False)
-    logger.info(f"Saved master.csv: {master.shape}")
+    games.to_csv(master_path, index=False)
+    logger.info(f"Saved master.csv: {games.shape}")
 
-    # Step 6: Create ML-ready dataset
-    ml_ready = create_ml_ready(master)
+    # Step 13: Create ML-ready dataset
+    ml_ready = create_ml_ready(games)
     ml_path = DATA_PROCESSED / "ml_ready.csv"
     ml_ready.to_csv(ml_path, index=False)
     logger.info(f"Saved ml_ready.csv: {ml_ready.shape}")

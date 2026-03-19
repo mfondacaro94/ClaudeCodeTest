@@ -51,7 +51,8 @@ def get_test_data():
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").reset_index(drop=True)
 
-    feature_cols = [c for c in df.columns if c not in ("home_win", "date")]
+    exclude = {"home_win", "date", "home_team", "away_team"}
+    feature_cols = [c for c in df.columns if c not in exclude]
     n = len(df)
     val_end = int(n * 0.9)
 

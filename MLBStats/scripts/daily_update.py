@@ -65,14 +65,16 @@ def main():
         ("Scrape game results", "scraper/scrape_games.py"),
         ("Scrape team stats", "scraper/scrape_teams.py"),
         ("Scrape pitcher stats", "scraper/scrape_pitchers.py"),
+        ("Scrape batter stats", "scraper/scrape_batters.py"),
+        ("Scrape injuries & transactions", "scraper/scrape_injuries.py"),
+        ("Scrape weather data", "scraper/scrape_weather.py"),
         ("Feature engineering", "models/feature_engineering.py"),
     ]
 
     if not args.no_retrain:
         steps.extend([
-            ("Train win/loss model", "models/train.py"),
-            ("Train totals model", "models/train_totals.py"),
-            ("Evaluate models", "models/evaluate.py"),
+            ("Train win prediction model", "models/train.py"),
+            ("Evaluate model", "models/evaluate.py"),
         ])
 
     steps.append(("Fetch live odds", "scraper/scrape_odds.py"))
