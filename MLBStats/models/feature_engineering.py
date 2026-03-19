@@ -400,8 +400,11 @@ def build_time_features(games: pd.DataFrame) -> pd.DataFrame:
 
 def build_matchup_diffs(games: pd.DataFrame) -> pd.DataFrame:
     """Build diff/ratio features between home and away stats."""
+    # CRITICAL: exclude outcome columns to prevent data leakage
+    leaky = {"home_runs", "home_win", "home_sp", "home_sp_url",
+             "away_runs", "away_sp", "away_sp_url", "home_team", "away_team"}
     home_cols = [c for c in games.columns
-                 if c.startswith("home_") and c != "home_team"
+                 if c.startswith("home_") and c not in leaky
                  and not c.endswith(("_team", "_sp", "_sp_url"))]
 
     for home_col in home_cols:
