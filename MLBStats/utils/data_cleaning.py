@@ -54,7 +54,8 @@ def parse_br_table(html: str, table_id: str) -> pd.DataFrame:
                 csk = cell.get("csk")
                 if csk and stat not in ("year_id", "year_ID", "team_name_abbr",
                                          "team_ID", "comp_name_abbr", "pos",
-                                         "awards", "series_result"):
+                                         "awards", "series_result",
+                                         "name_display", "player", "ranker"):
                     row[stat] = csk
                 else:
                     # Get text, stripping bold/italic wrappers
@@ -95,7 +96,7 @@ def normalize_team_name(name: str) -> str:
         "ANA": "LAA", "CAL": "LAA", "MON": "WSN", "FLA": "MIA",
         "TBD": "TBR", "TB": "TBR", "CWS": "CHW", "CHC": "CHC",
         "KC": "KCR", "SD": "SDP", "SF": "SFG", "LAD": "LAD",
-        "WSH": "WSN", "WAS": "WSN",
+        "WSH": "WSN", "WAS": "WSN", "ATH": "OAK",
     }
     name = name.strip().upper()
     return aliases.get(name, name)

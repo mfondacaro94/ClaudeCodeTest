@@ -112,7 +112,7 @@ def scrape_batter_stats(session: RateLimitedSession, player_url: str, player_id:
 
 
 def main():
-    session = RateLimitedSession(delay=4.0)
+    session = RateLimitedSession(delay=6.0)
     progress_path = DATA_RAW / "batters_progress.ndjson"
     progress = load_progress(progress_path)
     scraped_ids = {r["player_id"] for r in progress if r.get("type") == "stats"}
@@ -135,6 +135,16 @@ def main():
 
         logger.info(f"Discovered batters for {year}")
 
+    # If all rosters were already in progress, re-discover batter URLs
+    # so we can find any players whose stats haven't been scraped yet
+    if not all_batter_info:
+        logger.info("Re-discovering batter URLs from previously scraped rosters...")
+        for year in range(START_YEAR, END_YEAR + 1):
+            for team in TEAMS:
+                batters = discover_batter_urls(session, team, year)
+                all_batter_info.extend(batters)
+            logger.info(f"Re-discovered batters for {year}")
+
     # Deduplicate
     unique_batters = {}
     for b in all_batter_info:
@@ -144,33 +154,46 @@ def main():
 
     logger.info(f"Found {len(unique_batters)} unique batters to scrape")
 
-    # Phase 2: Scrape each batter's stats
-    all_stats = []
+    # Phase 2: Scrape each batter's stats (with incremental CSV saves)
+    batters_path = DATA_RAW / "batters.csv"
+    batch_stats = []
+    scraped_count = 0
+
     for i, (bid, info) in enumerate(unique_batters.items()):
         if bid in scraped_ids:
             continue
 
         stats = scrape_batter_stats(session, info["url"], bid)
-        all_stats.extend(stats)
+        batch_stats.extend(stats)
+        scraped_count += 1
 
         progress.append({"player_id": bid, "type": "stats", "seasons": len(stats)})
-        if (i + 1) % 50 == 0:
+
+        # Save to CSV every 50 batters so we never lose more than 50
+        if scraped_count % 50 == 0:
             save_progress(progress_path, progress)
-            logger.info(f"Scraped {i + 1}/{len(unique_batters)} batters ({len(all_stats)} season rows)")
+            batch_df = pd.DataFrame(batch_stats)
+            if not batch_df.empty:
+                if batters_path.exists() and batters_path.stat().st_size > 0:
+                    existing = pd.read_csv(batters_path)
+                    batch_df = pd.concat([existing, batch_df], ignore_index=True)
+                    batch_df = batch_df.drop_duplicates(subset=["player_id", "year_id", "team_name_abbr"], keep="last")
+                batch_df.to_csv(batters_path, index=False)
+                logger.info(f"Scraped {scraped_count}/{len(unique_batters)} batters — saved {len(batch_df)} rows to CSV")
+                batch_stats = []
 
+    # Final save for any remaining batch
     save_progress(progress_path, progress)
+    if batch_stats:
+        batch_df = pd.DataFrame(batch_stats)
+        if batters_path.exists() and batters_path.stat().st_size > 0:
+            existing = pd.read_csv(batters_path)
+            batch_df = pd.concat([existing, batch_df], ignore_index=True)
+            batch_df = batch_df.drop_duplicates(subset=["player_id", "year_id", "team_name_abbr"], keep="last")
+        batch_df.to_csv(batters_path, index=False)
 
-    # Save
-    batters_path = DATA_RAW / "batters.csv"
-    stats_df = pd.DataFrame(all_stats)
-
-    if batters_path.exists():
-        existing = pd.read_csv(batters_path)
-        stats_df = pd.concat([existing, stats_df], ignore_index=True)
-        stats_df = stats_df.drop_duplicates(subset=["player_id", "year_id", "team_name_abbr"], keep="last")
-
-    stats_df.to_csv(batters_path, index=False)
-    logger.info(f"Saved {len(stats_df)} batter-season rows to {batters_path}")
+    total = len(pd.read_csv(batters_path)) if batters_path.exists() and batters_path.stat().st_size > 0 else 0
+    logger.info(f"Saved {total} batter-season rows to {batters_path}")
 
 
 if __name__ == "__main__":

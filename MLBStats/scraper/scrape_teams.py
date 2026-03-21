@@ -52,7 +52,7 @@ def scrape_season_batting(session: RateLimitedSession, year: int) -> list[dict]:
     rows = []
     for _, row in df.iterrows():
         team = row.get("team_name_abbr", row.get("team_name", ""))
-        if not team or team in ("Lg Avg", "LgAvg", ""):
+        if not team or team in ("Lg Avg", "LgAvg", "") or "ZZZZ" in str(team).upper():
             continue
         record = {"year": year, "team": normalize_team_name(str(team))}
         for stat in BATTING_STATS:
@@ -82,7 +82,7 @@ def scrape_season_pitching(session: RateLimitedSession, year: int) -> list[dict]
     rows = []
     for _, row in df.iterrows():
         team = row.get("team_name_abbr", row.get("team_name", ""))
-        if not team or team in ("Lg Avg", "LgAvg", ""):
+        if not team or team in ("Lg Avg", "LgAvg", "") or "ZZZZ" in str(team).upper():
             continue
         record = {"year": year, "team": normalize_team_name(str(team))}
         for stat in PITCHING_STATS:
@@ -94,7 +94,7 @@ def scrape_season_pitching(session: RateLimitedSession, year: int) -> list[dict]
 
 
 def main():
-    session = RateLimitedSession(delay=4.0)
+    session = RateLimitedSession(delay=6.0)
     progress_path = DATA_RAW / "teams_progress.ndjson"
     progress = load_progress(progress_path)
     scraped_years = {r["year"] for r in progress}

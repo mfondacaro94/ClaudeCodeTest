@@ -37,6 +37,9 @@ def scrape_team_transactions(session: RateLimitedSession, team: str, year: int) 
 
     try:
         resp = session.get(url)
+        if resp is None:
+            logger.warning(f"No response for transactions {team} {year}")
+            return []
     except Exception as e:
         logger.warning(f"Failed to fetch transactions {team} {year}: {e}")
         return []
@@ -130,7 +133,7 @@ def scrape_team_transactions(session: RateLimitedSession, team: str, year: int) 
 
 
 def main():
-    session = RateLimitedSession(delay=4.0)
+    session = RateLimitedSession(delay=6.0)
     progress_path = DATA_RAW / "injuries_progress.ndjson"
     progress = load_progress(progress_path)
     scraped = {f"{r['team']}_{r['year']}" for r in progress}

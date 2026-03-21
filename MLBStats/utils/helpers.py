@@ -33,7 +33,7 @@ def get_logger(name: str) -> logging.Logger:
 class RateLimitedSession:
     """Requests session with built-in delay and retry logic."""
 
-    def __init__(self, delay: float = 3.0, max_retries: int = 3):
+    def __init__(self, delay: float = 5.0, max_retries: int = 5):
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": (
@@ -56,8 +56,8 @@ class RateLimitedSession:
                 resp = self.session.get(url, timeout=30, **kwargs)
                 self._last_request = time.time()
                 if resp.status_code == 429:
-                    wait = min(60, self.delay * (2 ** attempt))
-                    logging.warning(f"Rate limited (429). Waiting {wait:.0f}s...")
+                    wait = min(120, self.delay * (2 ** attempt))
+                    logging.warning(f"Rate limited (429). Waiting {wait:.0f}s (attempt {attempt}/{self.max_retries})...")
                     time.sleep(wait)
                     continue
                 resp.raise_for_status()
@@ -68,6 +68,9 @@ class RateLimitedSession:
                 wait = self.delay * (2 ** attempt)
                 logging.warning(f"Request failed ({e}). Retry {attempt}/{self.max_retries} in {wait:.0f}s")
                 time.sleep(wait)
+
+        # All retries exhausted (e.g. repeated 429s)
+        raise requests.RequestException(f"All {self.max_retries} retries exhausted for {url}")
 
 
 def load_progress(path: Path) -> list[dict]:
