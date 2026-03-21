@@ -235,8 +235,28 @@ All UFC setup guide best practices followed (see previous audit).
 ### What's Concerning
 - Bootstrap CI touches zero [-0.7%, +11.8%] — the edge could be zero in reality
 - 6.9% train/test overfit gap is on the high side
-- Symmetry check shows minor positional bias
+- Symmetry check shows minor positional bias (max 9.4%)
 - 22% of training data has synthetic pinnacle_p1_prob = 0.5
+
+### CRITICAL Live Deployment Issue (from Audit 6)
+**Closing odds as features**: The model's #1 and #2 features (pinnacle_p1_prob at 23.6%
+and market_avg_p1_prob at 17.1%) are derived from CLOSING odds — the final line when the
+match starts. In live betting, you must bet BEFORE closing, using pre-closing odds as input.
+Pre-closing odds can differ from closing odds by several percentage points (line movement).
+
+This means the backtest is slightly optimistic — it tests with information (closing line)
+that wouldn't be available at bet time. However:
+- The model also uses 95+ other features (ELO, fatigue, streaks, etc.)
+- Pre-closing odds are highly correlated with closing odds (typically within 1-3%)
+- The model's edge at 3%+ threshold provides buffer for this drift
+
+**Other issues to address before live deployment**:
+- No Pinnacle odds fallback (0.5 default is destructive for predictions)
+- No live odds API integration (The Odds API not yet connected)
+- Cold start problem for new/unseen players
+- Retirements not separately handled (bet settlement varies by book)
+- Name normalization edge cases (Del Potro, Auger-Aliassime, O'Connell types)
+- merge_sources.py has a stale loop variable bug (line 147)
 
 ### Recommendation
 **Proceed with caution**:
@@ -245,3 +265,5 @@ All UFC setup guide best practices followed (see previous audit).
 - Paper trade for 2-4 weeks first to validate against live odds
 - Track actual ROI monthly; if < 0% after 200+ bets, reassess
 - Hard court and grass show strongest edge; clay is marginal
+- Use current (pre-closing) Pinnacle odds as input — expect slightly less edge than backtest
+- Skip matches without Pinnacle odds or where players have thin history
