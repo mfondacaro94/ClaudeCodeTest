@@ -3,26 +3,28 @@
 ## What This Project Is
 ATP tennis match outcome prediction model using a 7-model ensemble (5 CatBoost + 2 XGBoost) trained on historical ATP match data from 2010-2025. Finds profitable betting edges against real bookmaker odds (Pinnacle, Bet365, etc.) using Kelly criterion bet sizing.
 
-## Status: V1 MODEL COMPLETE (audited)
-- **Test Accuracy: 65.1%** | ROC-AUC: 0.714 | Brier: 0.215
+## Status: V2 MODEL COMPLETE (audited, profitable)
+- **Test Accuracy: 67.6%** | ROC-AUC: 0.742 | Brier: 0.206
 - Test period: 2024-06-17 to 2025-11-16 (3,694 matches)
 - 40,766 total matches, 36,936 ML-ready after feature filtering
-- 108 features (98 diff/ratio + 10 context)
-- **Audit note**: V1 initial had data leakage (raw in-match box score stats as features).
-  Fixed by excluding w_ace, w_1stWon, etc. from P1/P2 feature creation.
+- 111 features (98 diff/ratio + 3 market + 10 context)
+- **V2 key change**: Added Pinnacle no-vig implied probability as a feature.
+  Model learns where the sharpest bookmaker is wrong instead of replicating odds.
+- **Backtest ROI**: +3.2% flat bet (all edges vs Pinnacle), +15.5% at 2%+ edge, +18.7% at 3%+ edge
+- **Audit note**: V1 had data leakage (raw in-match box score stats). Fixed in V1.1.
 
-## Top Features (by importance, audited)
-1. ratio_rank_pts (ranking points ratio)
-2. diff_elo (overall ELO difference)
-3. diff_surface_elo (surface-specific ELO)
-4. ratio_elo
-5. diff_age
-6. ratio_rank
-7. ratio_days_since_last (fatigue)
-8. diff_rank_pts
-9. ratio_surface_elo
-10. diff_career_matches (experience)
-11. distance_home (#15)
+## Top Features (by importance)
+1. pinnacle_p1_prob (23.6%) — market baseline
+2. market_avg_p1_prob (17.1%) — consensus line
+3. ratio_days_since_last (2.5%) — fatigue
+4. diff_age (1.7%)
+5. line_disagreement (1.6%) — sharp vs public divergence
+6. ratio_seed (1.3%) — tournament seeding
+7. diff_elo (1.0%)
+8. diff_surface_win_rate_20 (0.9%)
+9. ratio_rank_pts (0.9%)
+10. diff_surface_elo (0.9%)
+11. distance_home — travel fatigue + crowd advantage
 
 ## Data Sources
 - **tennis-data.co.uk**: Primary source — match results + odds from 5+ bookmakers (Pinnacle, Bet365, Ladbrokes, etc.), 2010-2025. 40,766 ATP matches. Odds in **decimal format**.

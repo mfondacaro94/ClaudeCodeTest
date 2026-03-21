@@ -216,6 +216,33 @@ def compute_rolling_features(plog: pd.DataFrame) -> pd.DataFrame:
         lambda x: x.shift(1).expanding().count()
     )
 
+    # --- V2 features: streaks and momentum ---
+
+    # Current win/loss streak (shifted)
+    def compute_streak(series):
+        """Compute current streak length. Positive = winning, negative = losing."""
+        shifted = series.shift(1)
+        streaks = []
+        current = 0
+        for val in shifted:
+            if pd.isna(val):
+                streaks.append(0)
+                continue
+            if val == 1:
+                current = current + 1 if current > 0 else 1
+            else:
+                current = current - 1 if current < 0 else -1
+            streaks.append(current)
+        return pd.Series(streaks, index=series.index)
+
+    plog["win_streak"] = grouped["won"].transform(compute_streak)
+
+    # Win rate momentum: last 5 minus last 20 (form vs baseline)
+    plog["form_momentum"] = plog.get("roll5_won", 0) - plog.get("roll20_won", 0)
+
+    # Upset rate: how often player beats higher-ranked opponents (shifted)
+    # We'll compute this later when we have rank info
+
     return plog
 
 
@@ -544,6 +571,46 @@ def main():
     for col in [c for c in df.columns if "odds" in c.lower()]:
         df[col] = df[col].clip(upper=50.0)
 
+    # --- V2: Market-aware features (Pinnacle implied probability) ---
+    logger.info("Computing market-aware features...")
+    if "p1_odds_ps" in df.columns:
+        p1_ip = 1 / df["p1_odds_ps"]
+        p2_ip = 1 / df["p2_odds_ps"]
+        total_ip = p1_ip + p2_ip
+        # No-vig implied probability (what Pinnacle really thinks)
+        df["pinnacle_p1_prob"] = p1_ip / total_ip
+        df["pinnacle_p1_prob"] = df["pinnacle_p1_prob"].fillna(0.5)
+    else:
+        df["pinnacle_p1_prob"] = 0.5
+
+    # Avg market implied probability (captures consensus)
+    if "p1_odds_avg" in df.columns:
+        p1_avg_ip = 1 / df["p1_odds_avg"]
+        p2_avg_ip = 1 / df["p2_odds_avg"]
+        total_avg = p1_avg_ip + p2_avg_ip
+        df["market_avg_p1_prob"] = p1_avg_ip / total_avg
+        df["market_avg_p1_prob"] = df["market_avg_p1_prob"].fillna(0.5)
+    else:
+        df["market_avg_p1_prob"] = 0.5
+
+    # Line disagreement: Pinnacle vs market average (captures sharp vs public)
+    df["line_disagreement"] = df["pinnacle_p1_prob"] - df.get("market_avg_p1_prob", 0.5)
+
+    # --- V2: Ranking momentum (rank change over recent period) ---
+    # Approximate from rolling win rate change
+    # Already have form_momentum from player log, but we need rank-based momentum
+    # Use WRank/LRank from TDU data for ranking trajectory
+    logger.info("Computing ranking momentum...")
+    if "WRank" in df.columns:
+        df["w_rank_num"] = pd.to_numeric(df["WRank"], errors="coerce")
+        df["l_rank_num"] = pd.to_numeric(df["LRank"], errors="coerce")
+
+        # Per-player rolling rank (lower = better, so negative change = improvement)
+        for prefix, rank_col in [("w_", "w_rank_num"), ("l_", "l_rank_num")]:
+            # We need to track rank changes per player over time
+            # Simple approach: compute rank at this match vs avg rank over last 10
+            pass  # Handled via diff_rank already
+
     # --- Build diff/ratio matchup features ---
     logger.info("Building diff/ratio matchup features...")
     p1_cols = [c for c in df.columns if c.startswith("p1_") and c not in
@@ -585,6 +652,10 @@ def main():
     logger.info("Creating ml_ready.csv...")
 
     feature_cols = [c for c in df.columns if c.startswith(("diff_", "ratio_"))]
+    # V2: market-aware features as training inputs
+    market_cols = [
+        "pinnacle_p1_prob", "market_avg_p1_prob", "line_disagreement",
+    ]
     context_cols = [
         "round_number", "tournament_level", "best_of", "is_indoor",
         "surface_hard", "surface_clay", "surface_grass",
@@ -594,7 +665,10 @@ def main():
     odds_cols = [c for c in df.columns if c.startswith(("p1_odds_", "p2_odds_"))]
     extra = ["n_books"] if "n_books" in df.columns else []
 
-    all_cols = id_cols + feature_cols + [c for c in context_cols if c in df.columns] + odds_cols + extra
+    all_cols = (id_cols + feature_cols
+                + [c for c in market_cols if c in df.columns]
+                + [c for c in context_cols if c in df.columns]
+                + odds_cols + extra)
 
     ml_df = df[[c for c in all_cols if c in df.columns]].copy()
 
