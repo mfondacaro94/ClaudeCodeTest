@@ -122,7 +122,7 @@ def flush_batch(batch: list[dict], output_path: Path, progress: list[dict], prog
 
 
 def main():
-    session = RateLimitedSession(delay=6.0)
+    session = RateLimitedSession(delay=10.0)
     progress_path = DATA_RAW / "pitcher_gamelogs_progress.ndjson"
     progress = load_progress(progress_path)
     scraped_keys = {f"{r['player_id']}_{r['year']}" for r in progress}
