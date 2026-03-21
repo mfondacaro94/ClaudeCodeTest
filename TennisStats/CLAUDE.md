@@ -3,23 +3,26 @@
 ## What This Project Is
 ATP tennis match outcome prediction model using a 7-model ensemble (5 CatBoost + 2 XGBoost) trained on historical ATP match data from 2010-2025. Finds profitable betting edges against real bookmaker odds (Pinnacle, Bet365, etc.) using Kelly criterion bet sizing.
 
-## Status: V1 MODEL COMPLETE
-- **Test Accuracy: 73.3%** | ROC-AUC: 0.834 | Brier: 0.164
-- Test period: 2024-05-30 to 2025-11-16 (3,683 matches)
-- 40,766 total matches, 36,827 ML-ready after feature filtering
-- 126 features (116 diff/ratio + 10 context)
+## Status: V1 MODEL COMPLETE (audited)
+- **Test Accuracy: 65.1%** | ROC-AUC: 0.714 | Brier: 0.215
+- Test period: 2024-06-17 to 2025-11-16 (3,694 matches)
+- 40,766 total matches, 36,936 ML-ready after feature filtering
+- 108 features (98 diff/ratio + 10 context)
+- **Audit note**: V1 initial had data leakage (raw in-match box score stats as features).
+  Fixed by excluding w_ace, w_1stWon, etc. from P1/P2 feature creation.
 
-## Top Features (by importance)
-1. diff_bpFaced (break points faced difference)
-2. diff_1stWon (first serve points won)
-3. ratio_1stWon
-4. diff_2ndWon (second serve points won)
-5. ratio_2ndWon
-6. ratio_bpFaced
-7. diff_bpSaved
-8. diff_svpt (service points)
-9. ratio_svpt
-10. ELO ratings (#13-14)
+## Top Features (by importance, audited)
+1. ratio_rank_pts (ranking points ratio)
+2. diff_elo (overall ELO difference)
+3. diff_surface_elo (surface-specific ELO)
+4. ratio_elo
+5. diff_age
+6. ratio_rank
+7. ratio_days_since_last (fatigue)
+8. diff_rank_pts
+9. ratio_surface_elo
+10. diff_career_matches (experience)
+11. distance_home (#15)
 
 ## Data Sources
 - **tennis-data.co.uk**: Primary source — match results + odds from 5+ bookmakers (Pinnacle, Bet365, Ladbrokes, etc.), 2010-2025. 40,766 ATP matches. Odds in **decimal format**.

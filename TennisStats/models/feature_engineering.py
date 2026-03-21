@@ -489,8 +489,14 @@ def main():
     np.random.seed(42)
     flip = np.random.random(len(df)) < 0.5
 
-    # Identify all w_ and l_ column pairs
-    w_cols = [c for c in df.columns if c.startswith("w_") and f"l_{c[2:]}" in df.columns]
+    # Identify all w_ and l_ column pairs — EXCLUDE raw in-match stats (data leakage!)
+    raw_match_stats = {
+        "ace", "df", "svpt", "1stIn", "1stWon", "2ndWon",
+        "SvGms", "bpSaved", "bpFaced",
+    }
+    w_cols = [c for c in df.columns
+              if c.startswith("w_") and f"l_{c[2:]}" in df.columns
+              and c[2:] not in raw_match_stats]
 
     # Create P1/P2 columns
     for w_col in w_cols:

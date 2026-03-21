@@ -82,10 +82,12 @@ def load_predictions():
     else:
         test_df["n_books"] = test_df["n_books"].fillna(0)
 
-    # Filter to matches with real odds (3+ books)
+    # Filter to matches with real odds (need at least Pinnacle or Bet365)
     before = len(test_df)
-    test_df = test_df[test_df["n_books"] >= 3].copy()
-    logger.info(f"Filtered to {len(test_df)}/{before} matches with real odds (3+ books)")
+    has_ps = test_df["p1_odds_ps"].notna() & test_df["p2_odds_ps"].notna()
+    has_max = test_df["p1_odds_max"].notna() & test_df["p2_odds_max"].notna()
+    test_df = test_df[has_ps | has_max].copy()
+    logger.info(f"Filtered to {len(test_df)}/{before} matches with real bookmaker odds")
 
     return test_df
 
@@ -208,6 +210,11 @@ def render():
                                      help="Use maximum odds across all bookmakers")
 
     results = run_backtest(test_df, bankroll, kelly_frac, min_edge, use_best_line)
+
+    if results.empty:
+        st.warning("No results generated. Check that odds data is available for the test period.")
+        return
+
     bets = results[results["bet"] != "skip"].copy()
 
     if bets.empty:
@@ -229,9 +236,12 @@ def render():
     drawdown = (peak - bets_kelly) / peak
     max_dd = drawdown.max() * 100
 
-    bets["kelly_return"] = bets["bal_kelly"].pct_change().fillna(0)
-    if bets["kelly_return"].std() > 0:
-        sharpe = bets["kelly_return"].mean() / bets["kelly_return"].std() * np.sqrt(252)
+    # Aggregate to daily returns for proper Sharpe calculation
+    bets["date_day"] = pd.to_datetime(bets["date"]).dt.date
+    daily_bal = bets.groupby("date_day")["bal_kelly"].last()
+    daily_returns = daily_bal.pct_change().dropna()
+    if len(daily_returns) > 1 and daily_returns.std() > 0:
+        sharpe = daily_returns.mean() / daily_returns.std() * np.sqrt(252)
     else:
         sharpe = 0
 
