@@ -11,7 +11,9 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 
-from utils.helpers import DATA_PROCESSED, DATA_RAW, MODELS_SAVED, load_json
+from utils.helpers import DATA_PROCESSED, DATA_RAW, MODELS_SAVED, load_json, get_logger
+
+logger = get_logger("backtest")
 from utils.odds_math import (
     american_to_decimal, american_to_implied_prob, remove_vig,
     kelly_fraction, compute_ev, compute_edge,
@@ -81,17 +83,19 @@ def load_predictions():
             how="left",
         )
 
-    # Fill missing odds with -110
+    # Fill missing odds columns
     for col in ["home_ml", "away_ml", "best_home_ml", "best_away_ml"]:
         if col not in test_df.columns:
-            test_df[col] = -110
-        else:
-            test_df[col] = test_df[col].fillna(-110)
-
+            test_df[col] = 0
     if "n_books" not in test_df.columns:
         test_df["n_books"] = 0
     else:
         test_df["n_books"] = test_df["n_books"].fillna(0)
+
+    # ONLY keep games with real odds (3+ sportsbooks) to avoid fake -110 inflation
+    before = len(test_df)
+    test_df = test_df[test_df["n_books"] >= 3].copy()
+    logger.info(f"Filtered to {len(test_df)}/{before} games with real odds (3+ books)")
 
     return test_df
 
@@ -193,10 +197,8 @@ def render():
         st.warning("No data available. Run the full pipeline first.")
         return
 
-    has_real_odds = (test_df["n_books"] > 0).sum()
-    st.info(f"Simulating bets on **{len(test_df)}** test games "
-            f"({has_real_odds} with real Vegas odds, rest use -110 fallback). "
-            f"Uses fractional Kelly criterion for bet sizing.")
+    st.info(f"Simulating bets on **{len(test_df)}** test games with real Vegas odds "
+            f"from 3+ sportsbooks. Uses fractional Kelly criterion for bet sizing.")
 
     # --- Settings ---
     st.subheader("Settings")
