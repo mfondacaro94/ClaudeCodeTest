@@ -1,20 +1,16 @@
 """Feature engineering: raw data -> master.csv -> ml_ready.csv.
 
-Transforms scraped game results, team stats, pitcher stats, batter stats,
-weather data, injury/trade reports, and stadium metadata into ML-ready
-matchup features.
+Transforms scraped game results, team stats, pitcher stats, and batter stats
+into ML-ready matchup features.
 
 Feature groups:
 1. Rolling team performance (10/20/40 game windows)
-2. Starting pitcher season stats
+2. Starting pitcher game-level + season stats
 3. Team batting aggregate stats (from roster-level batter data)
-4. Weather at game location (temp, wind, humidity, pressure)
-5. Travel distance & timezone change for away team
-6. Injury/IL impact (total WAR on IL for each team)
-7. Trade/roster churn (recent acquisitions)
-8. Time of day, day of week, season progression
-9. Stadium effects (elevation, dome/open-air)
-10. Diff/ratio matchup features across all of the above
+4. Travel distance & timezone change for away team
+5. Rest days & series position
+6. Time of day, day of week, season progression
+7. Diff/ratio matchup features across all of the above
 """
 
 import sys
@@ -26,10 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.helpers import get_logger, DATA_RAW, DATA_PROCESSED
 from utils.data_cleaning import normalize_team_name, safe_float
-from utils.stadium_data import (
-    travel_distance, timezone_change, is_dome_or_retractable,
-    elevation_ft, STADIUMS,
-)
+from utils.stadium_data import travel_distance, timezone_change
 
 logger = get_logger("feature_engineering")
 
@@ -169,6 +162,126 @@ def build_pitcher_features(pitchers: pd.DataFrame) -> pd.DataFrame:
     return pdf
 
 
+def build_sp_features(games: pd.DataFrame, pitcher_feats: pd.DataFrame) -> pd.DataFrame:
+    """Match starting pitchers to games and add their stats.
+
+    Uses sp_gamelogs.csv to identify who started each game, then merges
+    in their season-level stats (ERA, FIP, WHIP, K/9, WAR, etc.) and
+    game-level context (days rest, cumulative ERA/FIP going into the game).
+    """
+    sp_path = DATA_RAW / "sp_gamelogs.csv"
+    if not sp_path.exists():
+        logger.warning("No sp_gamelogs.csv — skipping SP features. Run scraper/scrape_sp_gamelogs.py first.")
+        return games
+
+    sp = pd.read_csv(sp_path)
+    sp["date"] = pd.to_datetime(sp["date"], errors="coerce")
+    games["date"] = pd.to_datetime(games["date"], errors="coerce")
+
+    if pitcher_feats.empty:
+        logger.warning("No pitcher features — skipping SP stats merge")
+        return games
+
+    # Get home SP and away SP for each game
+    home_sp = sp[sp["is_home"] == True][["date", "home_team", "away_team", "player_id",
+                                          "ip", "game_score", "days_rest",
+                                          "era_cume", "fip_cume"]].copy()
+    home_sp = home_sp.rename(columns={
+        "player_id": "home_sp_id", "ip": "home_sp_last_ip",
+        "game_score": "home_sp_last_gs", "days_rest": "home_sp_days_rest",
+        "era_cume": "home_sp_era_cume", "fip_cume": "home_sp_fip_cume",
+    })
+
+    away_sp = sp[sp["is_home"] == False][["date", "home_team", "away_team", "player_id",
+                                           "ip", "game_score", "days_rest",
+                                           "era_cume", "fip_cume"]].copy()
+    away_sp = away_sp.rename(columns={
+        "player_id": "away_sp_id", "ip": "away_sp_last_ip",
+        "game_score": "away_sp_last_gs", "days_rest": "away_sp_days_rest",
+        "era_cume": "away_sp_era_cume", "fip_cume": "away_sp_fip_cume",
+    })
+
+    # Merge SPs into games
+    games = games.merge(home_sp, on=["date", "home_team", "away_team"], how="left")
+    games = games.merge(away_sp, on=["date", "home_team", "away_team"], how="left")
+
+    # Now merge season-level pitcher stats for each SP
+    pitcher_feats["year"] = pd.to_numeric(pitcher_feats["year"], errors="coerce")
+
+    for prefix, sp_id_col in [("home", "home_sp_id"), ("away", "away_sp_id")]:
+        if sp_id_col not in games.columns:
+            continue
+        games["_year"] = games["date"].dt.year
+        pf = pitcher_feats.copy()
+        rename = {c: f"{prefix}_{c}" for c in pf.columns if c not in ("sp_id", "team", "year")}
+        pf = pf.rename(columns=rename)
+        games = games.merge(
+            pf, left_on=[sp_id_col, "_year"], right_on=["sp_id", "year"],
+            how="left", suffixes=("", f"_{prefix}_sp_dup")
+        )
+        games = games.drop(columns=["sp_id", "team", "year", "_year"], errors="ignore")
+
+    # Log match rate
+    home_matched = games["home_sp_id"].notna().sum()
+    away_matched = games["away_sp_id"].notna().sum()
+    logger.info(f"SP match rate: home={home_matched}/{len(games)} ({home_matched/len(games):.1%}), "
+                f"away={away_matched}/{len(games)} ({away_matched/len(games):.1%})")
+
+    return games
+
+
+def build_rest_and_series_features(games: pd.DataFrame) -> pd.DataFrame:
+    """Add rest days and series position features.
+
+    - Days since last game for each team
+    - Series game number (1st, 2nd, 3rd, 4th of series)
+    """
+    games = games.sort_values("date").reset_index(drop=True)
+
+    # Build team game log to compute rest days
+    home_log = games[["date", "home_team"]].rename(columns={"home_team": "team"})
+    away_log = games[["date", "away_team"]].rename(columns={"away_team": "team"})
+    team_log = pd.concat([home_log, away_log]).sort_values(["team", "date"])
+    team_log["prev_game"] = team_log.groupby("team")["date"].shift(1)
+    team_log["rest_days"] = (team_log["date"] - team_log["prev_game"]).dt.days
+
+    # Merge rest days back (home team)
+    home_rest = team_log.drop_duplicates(subset=["date", "team"], keep="last")
+    home_rest = home_rest.rename(columns={"team": "home_team", "rest_days": "home_rest_days"})
+    games = games.merge(home_rest[["date", "home_team", "home_rest_days"]],
+                        on=["date", "home_team"], how="left")
+
+    # Away team rest
+    away_rest = team_log.drop_duplicates(subset=["date", "team"], keep="last")
+    away_rest = away_rest.rename(columns={"team": "away_team", "rest_days": "away_rest_days"})
+    games = games.merge(away_rest[["date", "away_team", "away_rest_days"]],
+                        on=["date", "away_team"], how="left")
+
+    # Series position: consecutive games between same two teams
+    games = games.sort_values("date").reset_index(drop=True)
+    matchup = games.apply(
+        lambda r: tuple(sorted([r["home_team"], r["away_team"]])), axis=1
+    )
+    games["_matchup"] = matchup
+    games["_prev_matchup"] = games["_matchup"].shift(1)
+    games["_new_series"] = (games["_matchup"] != games["_prev_matchup"]).astype(int)
+
+    # Compute series game number
+    series_num = []
+    current = 0
+    for is_new in games["_new_series"]:
+        if is_new:
+            current = 1
+        else:
+            current += 1
+        series_num.append(current)
+    games["series_game_num"] = series_num
+
+    games = games.drop(columns=["_matchup", "_prev_matchup", "_new_series"], errors="ignore")
+
+    return games
+
+
 def build_team_batter_aggregates(batters: pd.DataFrame) -> pd.DataFrame:
     """Aggregate batter stats per team-season (lineup strength proxy)."""
     if batters.empty:
@@ -252,7 +365,7 @@ def build_weather_features(games: pd.DataFrame, weather: pd.DataFrame) -> pd.Dat
 
 
 def build_travel_features(games: pd.DataFrame) -> pd.DataFrame:
-    """Add travel distance, timezone change, and rest-day features."""
+    """Add travel distance and timezone change features."""
     games["travel_dist_miles"] = games.apply(
         lambda r: travel_distance(r["away_team"], r["home_team"]), axis=1
     )
@@ -260,10 +373,6 @@ def build_travel_features(games: pd.DataFrame) -> pd.DataFrame:
         lambda r: timezone_change(r["away_team"], r["home_team"]), axis=1
     )
     games["tz_change_abs"] = games["tz_change_hours"].abs()
-
-    # Stadium elevation (Coors Field effect)
-    games["stadium_elevation_ft"] = games["home_team"].apply(elevation_ft)
-    games["is_coors"] = (games["home_team"] == "COL").astype(int)
 
     return games
 
@@ -374,24 +483,17 @@ def build_trade_features(games: pd.DataFrame, injuries: pd.DataFrame) -> pd.Data
 
 
 def build_time_features(games: pd.DataFrame) -> pd.DataFrame:
-    """Time-of-day, day-of-week, season progression features."""
+    """Day-of-week, weekend, and season progression features."""
     games["day_of_week"] = games["date"].dt.dayofweek
     games["month"] = games["date"].dt.month
     games["is_weekend"] = games["day_of_week"].isin([5, 6]).astype(int)
 
     # Season progression (0 = opening day, 1 = game 162)
-    # Use game_num from rolling stats if available, else approximate
     if "home_game_num" in games.columns:
         games["season_pct"] = games["home_game_num"] / 162.0
     else:
-        # Approximate: day of year relative to ~Mar 28 through Sep 28
         day_of_year = games["date"].dt.dayofyear
         games["season_pct"] = ((day_of_year - 87) / 185.0).clip(0, 1)
-
-    # Is it April (early season, small samples, cold weather)?
-    games["is_april"] = (games["month"] == 4).astype(int)
-    # Is it September+ (expanded rosters, playoff push)?
-    games["is_sept_plus"] = (games["month"] >= 9).astype(int)
 
     return games
 
@@ -400,12 +502,12 @@ def build_time_features(games: pd.DataFrame) -> pd.DataFrame:
 
 def build_matchup_diffs(games: pd.DataFrame) -> pd.DataFrame:
     """Build diff/ratio features between home and away stats."""
-    # CRITICAL: exclude outcome columns to prevent data leakage
-    leaky = {"home_runs", "home_win", "home_sp", "home_sp_url",
-             "away_runs", "away_sp", "away_sp_url", "home_team", "away_team"}
+    # CRITICAL: exclude outcome columns and identifiers to prevent data leakage
+    leaky = {"home_runs", "home_win", "home_team", "away_team",
+             "home_sp_id", "away_sp_id"}
     home_cols = [c for c in games.columns
                  if c.startswith("home_") and c not in leaky
-                 and not c.endswith(("_team", "_sp", "_sp_url"))]
+                 and not c.endswith(("_team",))]
 
     for home_col in home_cols:
         suffix = home_col.replace("home_", "")
@@ -423,16 +525,16 @@ def build_matchup_diffs(games: pd.DataFrame) -> pd.DataFrame:
 
 def create_ml_ready(master: pd.DataFrame) -> pd.DataFrame:
     """Select ML features + target + identifiers for training."""
+    # Exclude diff/ratio features derived from dead-weight columns
+    dead_weight = {"il_war", "recent_trades", "recent_callups"}
+
     feature_cols = [c for c in master.columns
-                    if c.startswith(("diff_", "ratio_"))
+                    if (c.startswith(("diff_", "ratio_"))
+                        and not any(dw in c for dw in dead_weight))
                     or c in (
                         "day_of_week", "month", "is_weekend", "season_pct",
-                        "is_april", "is_sept_plus",
                         "travel_dist_miles", "tz_change_abs", "tz_change_hours",
-                        "stadium_elevation_ft", "is_coors",
-                        "wx_temp_f", "wx_humidity", "wx_precip_in",
-                        "wx_wind_mph", "wx_wind_dir", "wx_pressure_hpa",
-                        "wx_outdoor", "wx_temp_outdoor", "wx_wind_outdoor",
+                        "home_rest_days", "away_rest_days", "series_game_num",
                     )]
 
     target_col = "home_win"
@@ -465,8 +567,6 @@ def main():
 
     pitchers = load_pitchers()
     batters = load_batters()
-    weather = load_weather()
-    injuries = load_injuries()
 
     # Step 2: Rolling team performance
     logger.info("Computing rolling team stats...")
@@ -480,10 +580,9 @@ def main():
         stats = stats.rename(columns=rename).rename(columns={"team": team_col})
         games = games.merge(stats, on=["date", team_col], how="left")
 
-    # Step 4: Pitcher features (season-level, merged by team+year)
+    # Step 4: Pitcher features (season-level)
     logger.info("Building pitcher features...")
     pitcher_feats = build_pitcher_features(pitchers)
-    # TODO: Direct SP-to-game matching when game-level SP data is available
 
     # Step 5: Batter aggregate features (team-season level)
     logger.info("Building batter aggregate features...")
@@ -499,27 +598,23 @@ def main():
                                 how="left", suffixes=("", f"_{prefix}_bat"))
             games = games.drop(columns=["year", "_year"], errors="ignore")
 
-    # Step 6: Weather features
-    logger.info("Building weather features...")
-    games = build_weather_features(games, weather)
-
-    # Step 7: Travel / distance features
+    # Step 6: Travel / distance features
     logger.info("Building travel features...")
     games = build_travel_features(games)
 
-    # Step 8: Injury impact features
-    logger.info("Building injury features...")
-    games = build_injury_features(games, injuries, pitchers, batters)
+    # Step 7: Starting pitcher features (game-level)
+    logger.info("Building starting pitcher features...")
+    games = build_sp_features(games, pitcher_feats)
 
-    # Step 9: Trade/roster churn features
-    logger.info("Building trade/roster features...")
-    games = build_trade_features(games, injuries)
+    # Step 8: Rest days and series position
+    logger.info("Building rest/series features...")
+    games = build_rest_and_series_features(games)
 
-    # Step 10: Time / schedule features
+    # Step 9: Time / schedule features
     logger.info("Building time features...")
     games = build_time_features(games)
 
-    # Step 11: Build diff/ratio matchup features
+    # Step 10: Build diff/ratio matchup features
     logger.info("Building matchup diff/ratio features...")
     games = build_matchup_diffs(games)
 
