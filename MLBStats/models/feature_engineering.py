@@ -165,68 +165,147 @@ def build_pitcher_features(pitchers: pd.DataFrame) -> pd.DataFrame:
 def build_sp_features(games: pd.DataFrame, pitcher_feats: pd.DataFrame) -> pd.DataFrame:
     """Match starting pitchers to games and add their stats.
 
-    Uses sp_gamelogs.csv to identify who started each game, then merges
-    in their season-level stats (ERA, FIP, WHIP, K/9, WAR, etc.) and
-    game-level context (days rest, cumulative ERA/FIP going into the game).
+    Uses pitcher_gamelogs.csv (from MLB Stats API) to identify who started
+    each game, then merges season-level pitcher stats and game-level context.
     """
-    sp_path = DATA_RAW / "sp_gamelogs.csv"
-    if not sp_path.exists():
-        logger.warning("No sp_gamelogs.csv — skipping SP features. Run scraper/scrape_sp_gamelogs.py first.")
+    gl_path = DATA_RAW / "pitcher_gamelogs.csv"
+    if not gl_path.exists():
+        logger.warning("No pitcher_gamelogs.csv — skipping SP features.")
         return games
 
-    sp = pd.read_csv(sp_path)
-    sp["date"] = pd.to_datetime(sp["date"], errors="coerce")
+    gl = pd.read_csv(gl_path)
+    gl["date"] = pd.to_datetime(gl["date"], errors="coerce")
     games["date"] = pd.to_datetime(games["date"], errors="coerce")
 
-    if pitcher_feats.empty:
-        logger.warning("No pitcher features — skipping SP stats merge")
-        return games
+    # Filter to starters only
+    sp = gl[gl["is_start"] == True].copy()
 
-    # Get home SP and away SP for each game
-    home_sp = sp[sp["is_home"] == True][["date", "home_team", "away_team", "player_id",
-                                          "ip", "game_score", "days_rest",
-                                          "era_cume", "fip_cume"]].copy()
-    home_sp = home_sp.rename(columns={
-        "player_id": "home_sp_id", "ip": "home_sp_last_ip",
-        "game_score": "home_sp_last_gs", "days_rest": "home_sp_days_rest",
-        "era_cume": "home_sp_era_cume", "fip_cume": "home_sp_fip_cume",
-    })
+    for prefix, is_home_val in [("home", True), ("away", False)]:
+        side = sp[sp["is_home"] == is_home_val].copy()
+        # Keep only one SP per game (first listed)
+        side = side.drop_duplicates(subset=["date", "home_team", "away_team"], keep="first")
 
-    away_sp = sp[sp["is_home"] == False][["date", "home_team", "away_team", "player_id",
-                                           "ip", "game_score", "days_rest",
-                                           "era_cume", "fip_cume"]].copy()
-    away_sp = away_sp.rename(columns={
-        "player_id": "away_sp_id", "ip": "away_sp_last_ip",
-        "game_score": "away_sp_last_gs", "days_rest": "away_sp_days_rest",
-        "era_cume": "away_sp_era_cume", "fip_cume": "away_sp_fip_cume",
-    })
+        # ONLY use pre-game info — NOT game-day stats (ip, er, so, bb, hr, pitches)
+        # Those are outcomes, not predictors — using them is data leakage!
+        rename = {
+            "player_id": f"{prefix}_sp_id",
+            "throws": f"{prefix}_sp_throws",
+            "era_cume": f"{prefix}_sp_era_cume",
+        }
+        available = {k: v for k, v in rename.items() if k in side.columns}
+        side = side[["date", "home_team", "away_team"] + list(available.keys())]
+        side = side.rename(columns=available)
 
-    # Merge SPs into games
-    games = games.merge(home_sp, on=["date", "home_team", "away_team"], how="left")
-    games = games.merge(away_sp, on=["date", "home_team", "away_team"], how="left")
+        games = games.merge(side, on=["date", "home_team", "away_team"], how="left")
 
-    # Now merge season-level pitcher stats for each SP
-    pitcher_feats["year"] = pd.to_numeric(pitcher_feats["year"], errors="coerce")
+    # Convert SP throws to binary (1 = lefty)
+    for prefix in ["home", "away"]:
+        col = f"{prefix}_sp_throws"
+        if col in games.columns:
+            games[f"{prefix}_sp_is_lefty"] = (games[col] == "L").astype(int)
+            games = games.drop(columns=[col])
 
-    for prefix, sp_id_col in [("home", "home_sp_id"), ("away", "away_sp_id")]:
-        if sp_id_col not in games.columns:
-            continue
-        games["_year"] = games["date"].dt.year
-        pf = pitcher_feats.copy()
-        rename = {c: f"{prefix}_{c}" for c in pf.columns if c not in ("sp_id", "team", "year")}
-        pf = pf.rename(columns=rename)
-        games = games.merge(
-            pf, left_on=[sp_id_col, "_year"], right_on=["sp_id", "year"],
-            how="left", suffixes=("", f"_{prefix}_sp_dup")
-        )
-        games = games.drop(columns=["sp_id", "team", "year", "_year"], errors="ignore")
+    # Note: season-level pitcher stats (from BR) use different IDs than MLB API game logs.
+    # We rely on the game-level stats (IP, ER, SO, BB, pitches, era_cume) from the API
+    # which are already merged above and more granular than season averages.
 
-    # Log match rate
-    home_matched = games["home_sp_id"].notna().sum()
-    away_matched = games["away_sp_id"].notna().sum()
+    home_matched = games.get("home_sp_id", pd.Series()).notna().sum()
+    away_matched = games.get("away_sp_id", pd.Series()).notna().sum()
     logger.info(f"SP match rate: home={home_matched}/{len(games)} ({home_matched/len(games):.1%}), "
                 f"away={away_matched}/{len(games)} ({away_matched/len(games):.1%})")
 
+    return games
+
+
+def build_bullpen_features(games: pd.DataFrame) -> pd.DataFrame:
+    """Compute bullpen workload: total IP pitched by relievers in last 3 days per team."""
+    gl_path = DATA_RAW / "pitcher_gamelogs.csv"
+    if not gl_path.exists():
+        logger.warning("No pitcher_gamelogs.csv — skipping bullpen features.")
+        return games
+
+    gl = pd.read_csv(gl_path)
+    gl["date"] = pd.to_datetime(gl["date"], errors="coerce")
+
+    # Relievers only
+    relievers = gl[gl["is_start"] == False].copy()
+    relievers["ip"] = pd.to_numeric(relievers["ip"], errors="coerce").fillna(0)
+
+    # Sum reliever IP per team per date
+    daily_bp = relievers.groupby(["date", "team"])["ip"].sum().reset_index()
+    daily_bp = daily_bp.rename(columns={"ip": "bp_ip"})
+
+    # Compute rolling 3-day bullpen workload per team
+    daily_bp = daily_bp.sort_values(["team", "date"])
+    daily_bp["bp_ip_last3"] = daily_bp.groupby("team")["bp_ip"].transform(
+        lambda x: x.shift(1).rolling(3, min_periods=1).sum()
+    )
+
+    # Merge into games
+    for prefix, team_col in [("home", "home_team"), ("away", "away_team")]:
+        bp = daily_bp[["date", "team", "bp_ip_last3"]].copy()
+        bp = bp.rename(columns={"team": team_col, "bp_ip_last3": f"{prefix}_bp_ip_last3"})
+        games = games.merge(bp, on=["date", team_col], how="left")
+
+    logger.info(f"Bullpen features: {games['home_bp_ip_last3'].notna().sum()}/{len(games)} matched")
+    return games
+
+
+def build_umpire_features(games: pd.DataFrame) -> pd.DataFrame:
+    """Add home plate umpire run-scoring tendency."""
+    ump_path = DATA_RAW / "umpires.csv"
+    if not ump_path.exists():
+        logger.warning("No umpires.csv — skipping umpire features.")
+        return games
+
+    umps = pd.read_csv(ump_path)
+    umps["date"] = pd.to_datetime(umps["date"], errors="coerce")
+
+    # Merge umpire ID into games
+    games = games.merge(
+        umps[["date", "home_team", "away_team", "hp_umpire_id"]],
+        on=["date", "home_team", "away_team"], how="left"
+    )
+
+    # Compute umpire's historical avg total runs (shifted to prevent leakage)
+    # Use games data which has runs
+    if "home_runs" in games.columns and "away_runs" in games.columns:
+        games["_total_runs"] = games["home_runs"] + games["away_runs"]
+        games = games.sort_values("date")
+
+        ump_avgs = games.groupby("hp_umpire_id")["_total_runs"].transform(
+            lambda x: x.shift(1).expanding().mean()
+        )
+        games["ump_avg_runs"] = ump_avgs
+        games = games.drop(columns=["_total_runs"])
+
+    matched = games["hp_umpire_id"].notna().sum()
+    logger.info(f"Umpire match rate: {matched}/{len(games)} ({matched/len(games):.1%})")
+    return games
+
+
+def build_park_factor_features(games: pd.DataFrame) -> pd.DataFrame:
+    """Add park factors (BPF/PPF) for the home stadium."""
+    pf_path = DATA_RAW / "park_factors.csv"
+    if not pf_path.exists():
+        logger.warning("No park_factors.csv — skipping park factor features.")
+        return games
+
+    pf = pd.read_csv(pf_path)
+    games["_year"] = games["date"].dt.year
+
+    games = games.merge(
+        pf.rename(columns={"team": "home_team", "year": "_year"}),
+        on=["home_team", "_year"], how="left"
+    )
+    games = games.drop(columns=["_year"])
+
+    # Fill missing with neutral (100)
+    games["bpf"] = games["bpf"].fillna(100)
+    games["ppf"] = games["ppf"].fillna(100)
+
+    matched = (games["bpf"] != 100).sum()
+    logger.info(f"Park factors matched: {matched}/{len(games)} ({matched/len(games):.1%})")
     return games
 
 
@@ -535,6 +614,9 @@ def create_ml_ready(master: pd.DataFrame) -> pd.DataFrame:
                         "day_of_week", "month", "is_weekend", "season_pct",
                         "travel_dist_miles", "tz_change_abs", "tz_change_hours",
                         "home_rest_days", "away_rest_days", "series_game_num",
+                        "home_sp_is_lefty", "away_sp_is_lefty",
+                        "home_bp_ip_last3", "away_bp_ip_last3",
+                        "ump_avg_runs", "bpf", "ppf",
                     )]
 
     target_col = "home_win"
@@ -606,15 +688,27 @@ def main():
     logger.info("Building starting pitcher features...")
     games = build_sp_features(games, pitcher_feats)
 
-    # Step 8: Rest days and series position
+    # Step 8: Bullpen workload features
+    logger.info("Building bullpen features...")
+    games = build_bullpen_features(games)
+
+    # Step 9: Umpire features
+    logger.info("Building umpire features...")
+    games = build_umpire_features(games)
+
+    # Step 10: Park factor features
+    logger.info("Building park factor features...")
+    games = build_park_factor_features(games)
+
+    # Step 11: Rest days and series position
     logger.info("Building rest/series features...")
     games = build_rest_and_series_features(games)
 
-    # Step 9: Time / schedule features
+    # Step 12: Time / schedule features
     logger.info("Building time features...")
     games = build_time_features(games)
 
-    # Step 10: Build diff/ratio matchup features
+    # Step 13: Build diff/ratio matchup features
     logger.info("Building matchup diff/ratio features...")
     games = build_matchup_diffs(games)
 

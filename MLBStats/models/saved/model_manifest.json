@@ -3,6 +3,13 @@
     "travel_dist_miles",
     "tz_change_hours",
     "tz_change_abs",
+    "home_sp_is_lefty",
+    "away_sp_is_lefty",
+    "home_bp_ip_last3",
+    "away_bp_ip_last3",
+    "ump_avg_runs",
+    "bpf",
+    "ppf",
     "home_rest_days",
     "away_rest_days",
     "series_game_num",
@@ -60,6 +67,10 @@
     "ratio_team_bat_ops",
     "diff_team_bat_ops_plus",
     "ratio_team_bat_ops_plus",
+    "diff_sp_is_lefty",
+    "ratio_sp_is_lefty",
+    "diff_bp_ip_last3",
+    "ratio_bp_ip_last3",
     "diff_rest_days",
     "ratio_rest_days"
   ],
@@ -77,16 +88,16 @@
     43
   ],
   "metrics": {
-    "accuracy": 0.5636,
-    "log_loss": 0.6799,
-    "roc_auc": 0.5819,
-    "brier_score": 0.2434,
-    "n_test": 2470,
+    "accuracy": 0.5698,
+    "log_loss": 0.6792,
+    "roc_auc": 0.5832,
+    "brier_score": 0.2431,
+    "n_test": 2487,
     "n_models": 7,
-    "home_win_rate_actual": 0.5425,
-    "home_win_rate_predicted": 0.533
+    "home_win_rate_actual": 0.542,
+    "home_win_rate_predicted": 0.5333
   },
-  "train_size": 19757,
-  "val_size": 2470,
-  "test_size": 2470
+  "train_size": 19893,
+  "val_size": 2487,
+  "test_size": 2487
 }

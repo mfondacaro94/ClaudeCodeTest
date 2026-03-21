@@ -3,13 +3,15 @@
 ## What This Project Is
 An MLB game outcome prediction model that predicts home team win probability for every game. Uses a 7-model ensemble (5 CatBoost + 2 XGBoost) trained on 2015-2025 data. The goal is to find profitable betting edges against real Vegas moneylines.
 
-## Current Model Performance (as of 2026-03-21)
-- **Test set**: 2,470 games (Sept 2024 - Sept 2025)
-- **Model accuracy**: 56.6% | **Vegas accuracy**: 58.1%
-- **ROI vs real odds (best available line)**: +2.4% all picks, +6.2% at 5%+ edge, +10.2% at 10%+ edge
+## Current Model Performance (as of 2026-03-21, V3)
+- **Test set**: 2,487 games (Sept 2024 - Sept 2025)
+- **Model accuracy**: 57.0% | **Vegas accuracy**: 57.9% | **Gap**: 0.9%
+- **ROI vs real odds (best available line)**: +5.3% all picks, +10.0% at 5%+ edge, +10.8% at 10%+ edge
+- **P&L**: +$4,612 on 873 bets at $100 each
 - **Baseline**: Always betting Vegas favorites loses -2.1% ROI (vig)
-- **Features**: 62 (rolling team stats, batter aggregates, travel, rest days, season progression)
+- **Features**: 73 (rolling stats, batter aggregates, SP matchup, bullpen workload, umpire tendency, park factors, platoon splits, travel, rest days, season progression)
 - **Training split**: 80/10/10 chronological (no future leakage)
+- **Previous (V2)**: 56.4% accuracy, +2.4% ROI — V3 is a major improvement
 
 ## Data Pipeline
 ```
@@ -57,41 +59,39 @@ DASHBOARD (dashboard/)
 ## Feature Improvement Roadmap (7 items)
 Status as of 2026-03-21:
 
-1. **Game-level starting pitcher matchup** — SCRAPING NOW
-   - Scraper: `scraper/scrape_mlb_api_pitchers.py` (MLB Stats API, ~3.5 hrs)
-   - Feature builder: `build_sp_features()` in feature_engineering.py (already coded)
-   - Data: pitcher_gamelogs.csv with all appearances, SP identification, handedness
-   - Why: SP stats are currently at team-season level, not game level. Biggest single improvement.
+1. **Game-level starting pitcher matchup** — DONE
+   - Scraper: `scraper/scrape_mlb_api_pitchers.py` (MLB Stats API)
+   - 238,217 pitcher appearances scraped, 93.2% SP match rate
+   - Features: `home/away_sp_era_cume`, `home/away_sp_is_lefty` + diffs/ratios
+   - IMPORTANT: Only use pre-game stats (era_cume, handedness). Game-day stats (IP, ER, SO) are leakage!
 
-2. **Bullpen usage/availability** — SCRAPING NOW (same scraper as #1)
-   - Same pitcher_gamelogs.csv has ALL reliever appearances with IP
-   - Feature builder needed: track bullpen IP in last 1-3 days per team
+2. **Bullpen usage/availability** — DONE
+   - Same pitcher_gamelogs.csv, `build_bullpen_features()` computes rolling 3-day reliever IP
+   - Features: `home/away_bp_ip_last3` (95.6% match rate)
 
-3. **Platoon splits (L/R matchups)** — SCRAPING NOW (same scraper as #1)
-   - pitcher_gamelogs.csv includes `throws` column (L/R) from MLB API
-   - Feature builder needed: is SP a lefty? team batting splits vs LHP/RHP
+3. **Platoon splits (L/R matchups)** — DONE
+   - `throws` column from MLB API, `home/away_sp_is_lefty` binary features
+   - Feature importance: 0.6 (moderate signal)
 
 4. **Rest days / series position** — DONE
-   - `home_rest_days`, `away_rest_days`, `series_game_num` features built
-   - Low importance so far (0.1-0.5) but may improve with more granular data
+   - `home_rest_days`, `away_rest_days`, `series_game_num`
 
-5. **Umpire tendencies** — DATA COMPLETE
-   - Downloaded from Retrosheet: `data/raw/umpires.csv` (25,191 games, 138 umpires)
-   - Feature builder needed: umpire run-scoring tendency (historical avg runs in their games)
+5. **Umpire tendencies** — DONE
+   - `ump_avg_runs`: expanding mean of total runs in umpire's historical games (shifted to prevent leakage)
+   - 43.9% match rate (Retrosheet gaps)
 
-6. **Park factors** — DATA COMPLETE
-   - Scraped from BR: `data/raw/park_factors.csv` (330 rows, BPF/PPF per team/year)
-   - Feature builder needed: merge BPF into games by home_team + year
+6. **Park factors** — DONE
+   - `bpf`, `ppf`: batter/pitcher park factors per team per year (88% match rate)
 
 7. **Recent lineup changes** — DEFERRED
    - Daily starting lineups are hard to get historically
    - Will add for live predictions later
 
-## Next Steps (after scrape completes)
-1. Integrate all new features into `models/feature_engineering.py`
-2. Re-run feature engineering → retrain → backtest against real Vegas odds
-3. Compare new model accuracy vs Vegas (currently 56.6% vs 58.1%)
-4. Update dashboard with new results
+## Next Steps
+1. Hyperparameter optimization (Optuna) to squeeze more from the 73 features
+2. Option B backtest: layer in real odds for full Kelly criterion P&L simulation
+3. Live prediction pipeline for upcoming games
+4. Consider additional data: pitch-level Statcast data, weather (revisit with park-adjusted approach)
 
 ## Important Files
 - `models/feature_engineering.py` — Full feature pipeline (raw → master.csv → ml_ready.csv)
