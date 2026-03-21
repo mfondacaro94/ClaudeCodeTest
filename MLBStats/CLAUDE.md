@@ -3,15 +3,17 @@
 ## What This Project Is
 An MLB game outcome prediction model that predicts home team win probability for every game. Uses a 7-model ensemble (5 CatBoost + 2 XGBoost) trained on 2015-2025 data. The goal is to find profitable betting edges against real Vegas moneylines.
 
-## Current Model Performance (as of 2026-03-21, V3)
-- **Test set**: 2,487 games (Sept 2024 - Sept 2025)
-- **Model accuracy**: 57.0% | **Vegas accuracy**: 57.9% | **Gap**: 0.9%
-- **ROI vs real odds (best available line)**: +5.3% all picks, +10.0% at 5%+ edge, +10.8% at 10%+ edge
-- **P&L**: +$4,612 on 873 bets at $100 each
-- **Baseline**: Always betting Vegas favorites loses -2.1% ROI (vig)
-- **Features**: 73 (rolling stats, batter aggregates, SP matchup, bullpen workload, umpire tendency, park factors, platoon splits, travel, rest days, season progression)
+## Current Model Performance (as of 2026-03-21, V3-audited)
+- **Test set**: 2,487 games (Sept 2024 - Sept 2025), 1,631 with real odds from 3+ books
+- **Model accuracy**: 56.2% | **Vegas accuracy**: 57.9% | **Gap**: 1.7%
+- **ROI vs real odds (best available line, capped -450 to +400)**:
+  - All value picks: 728 bets, 51.5% win, +$125 (+0.2% ROI) — basically breakeven
+  - Edge > 5%: 318 bets, 50.9% win, +$1,638 (+5.2% ROI) — genuine edge
+  - Edge > 10%: 105 bets, 55.2% win, +$2,228 (+21.2% ROI) — strong high-conviction picks
+- **Baseline**: Always betting Vegas favorites loses -2.2% ROI
+- **Features**: 77 (rolling stats, prior-year batter aggregates, SP pre-game ERA, SP handedness, bullpen workload, umpire tendency, park factors, travel, rest days, season progression)
 - **Training split**: 80/10/10 chronological (no future leakage)
-- **Previous (V2)**: 56.4% accuracy, +2.4% ROI — V3 is a major improvement
+- **Audited**: Data leakage fixed (batter stats shifted to prior year), odds outliers capped, all verified by independent agents
 
 ## Data Pipeline
 ```
