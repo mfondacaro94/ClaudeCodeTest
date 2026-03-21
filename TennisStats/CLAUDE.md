@@ -1,99 +1,119 @@
 # TennisStats Betting Model — Project Context
 
 ## What This Project Is
-A tennis match outcome prediction model that predicts match winner probability. Will use a multi-model ensemble (CatBoost + XGBoost) trained on historical ATP/WTA match data. The goal is to find profitable betting edges against real Vegas moneylines.
+ATP tennis match outcome prediction model using a 7-model ensemble (5 CatBoost + 2 XGBoost) trained on historical ATP match data from 2010-2025. Finds profitable betting edges against real bookmaker odds (Pinnacle, Bet365, etc.) using Kelly criterion bet sizing.
 
-## Status: PROJECT SETUP — NOT STARTED
-This project was scaffolded on 2026-03-21. No scraping, feature engineering, or modeling has been done yet.
+## Status: V1 MODEL COMPLETE
+- **Test Accuracy: 73.3%** | ROC-AUC: 0.834 | Brier: 0.164
+- Test period: 2024-05-30 to 2025-11-16 (3,683 matches)
+- 40,766 total matches, 36,827 ML-ready after feature filtering
+- 126 features (116 diff/ratio + 10 context)
 
-## Architecture (following UFC/MLB proven pattern)
+## Top Features (by importance)
+1. diff_bpFaced (break points faced difference)
+2. diff_1stWon (first serve points won)
+3. ratio_1stWon
+4. diff_2ndWon (second serve points won)
+5. ratio_2ndWon
+6. ratio_bpFaced
+7. diff_bpSaved
+8. diff_svpt (service points)
+9. ratio_svpt
+10. ELO ratings (#13-14)
+
+## Data Sources
+- **tennis-data.co.uk**: Primary source — match results + odds from 5+ bookmakers (Pinnacle, Bet365, Ladbrokes, etc.), 2010-2025. 40,766 ATP matches. Odds in **decimal format**.
+- **Jeff Sackmann's tennis_atp GitHub**: Secondary — match-level serve/return stats, player bios (DOB, height, hand, country), rankings history. Matched at 79.3% rate.
+- **The Odds API**: For live upcoming match odds (not yet integrated).
+
+## Architecture
 ```
 TennisStats/
-├── CLAUDE.md                  — This file (project context for Claude)
-├── setup_guide_reference.md   — UFC setup guide for reference architecture
-├── requirements.txt           — Python dependencies (to be created)
+├── CLAUDE.md                              — This file
+├── setup_guide_reference.md               — UFC setup guide reference
+├── requirements.txt                       — Python dependencies
 │
-├── scraper/                   — Data collection
-│   ├── (scrapers TBD)         — Player stats, match results, rankings, odds
+├── scraper/
+│   ├── download_tennis_data_uk.py         — Download odds+results by year (resumable)
+│   ├── download_sackmann.py               — Download stats+players+rankings (resumable)
+│   └── merge_sources.py                   — Match & merge both sources
 │
-├── utils/                     — Shared utilities
-│   ├── helpers.py             — Logging, serialization, rate limiting
-│   ├── data_cleaning.py       — Name normalization, stat parsing
-│   └── odds_math.py           — American/decimal/probability conversions, Kelly
+├── utils/
+│   ├── helpers.py                         — Logging, NDJSON progress, RateLimitedSession
+│   ├── data_cleaning.py                   — Name normalization, geo coords, score parsing
+│   └── odds_math.py                       — Decimal/American conversion, Kelly criterion
 │
-├── models/                    — ML pipeline
-│   ├── feature_engineering.py — Raw data → master.csv → ml_ready.csv
-│   ├── train.py               — Train ensemble (5 CatBoost + 2 XGBoost)
-│   ├── evaluate.py            — Evaluate models, save metrics
-│   └── saved/                 — Trained model artifacts
+├── models/
+│   ├── feature_engineering.py             — ELO, rolling stats, H2H, fatigue, distance-to-home
+│   ├── train.py                           — Train 5 CatBoost + 2 XGBoost ensemble
+│   ├── evaluate.py                        — Metrics, feature importance, confusion matrix
+│   └── saved/                             — Model artifacts + manifests
 │
-├── dashboard/                 — Streamlit web app
-│   ├── app.py                 — Main app with sidebar navigation
-│   ├── backtest.py            — Kelly criterion backtesting with real odds
-│   └── (other pages TBD)
+├── dashboard/
+│   ├── app.py                             — Streamlit main app
+│   ├── backtest.py                        — Kelly criterion backtest with real odds
+│   └── model_performance.py               — Test metrics + feature importance charts
 │
-├── scripts/                   — Automation
-│   └── (pipeline runners TBD)
+├── scripts/
+│   └── run_pipeline.py                    — Full pipeline orchestrator
 │
 ├── data/
-│   ├── raw/                   — Scraped data
-│   ├── processed/             — Feature-engineered data
-│   └── odds/                  — Historical odds data
+│   ├── raw/                               — Downloaded CSVs (by year + combined)
+│   ├── processed/                         — master.csv (433 cols) + ml_ready.csv (139 cols)
+│   └── odds/                              — (reserved for live odds cache)
 │
-├── tests/                     — Unit tests
-└── logs/                      — Pipeline logs
+├── tests/                                 — Unit tests (TBD)
+└── logs/                                  — Pipeline logs
 ```
 
-## Data Sources to Research
-- **Match results**: ATP/WTA official data, tennis-data.co.uk (free CSVs with odds!), Jeff Sackmann's GitHub (comprehensive free tennis data)
-- **Player stats**: Serve %, break points, aces, double faults, surface-specific records
-- **Rankings**: ATP/WTA rankings history (ELO ratings available from various sources)
-- **Odds**: tennis-data.co.uk includes historical closing odds from multiple bookmakers
-- **Live odds**: The Odds API (free tier, same as MLB project)
+## Feature Groups (all use shift(1) to prevent leakage)
+1. **ELO ratings**: Overall + surface-specific, K=32/24/16 by experience
+2. **Surface win rate**: Rolling win % on current surface (10/20 match windows)
+3. **Recent form**: Win rate last 5/10/20 matches
+4. **Head-to-head**: H2H wins overall + on current surface
+5. **Fatigue**: Days since last match, sets/matches in last 7/14 days
+6. **Tournament context**: Round number, best-of-3 vs 5, tournament level, seeding
+7. **Serve stats**: Ace rate, DF rate, 1st serve %, 1st/2nd serve win % (rolling)
+8. **Return stats**: Break point conversion %, return points won %
+9. **Age/experience**: Age, height, handedness, career match count
+10. **Indoor/outdoor**: Court environment indicator
+11. **Distance to home**: Haversine km from player country to tournament city
 
-## Key Differences from MLB
-- **Individual sport**: Player form, fitness, fatigue matter more than team composition
-- **Surface matters enormously**: Clay (Roland Garros), grass (Wimbledon), hard court — players have wildly different win rates by surface
-- **Tournament structure**: Knockout format, seedings, draw analysis
-- **Fatigue/scheduling**: Players who went 5 sets yesterday are at a disadvantage
-- **Head-to-head**: Some players consistently beat others regardless of ranking
-- **Ranking momentum**: Players on winning streaks vs declining form
+## Key Design Decisions
+- **P1/P2 randomly assigned** (50% flip) to balance dataset — P1 win rate ~0.51
+- **All stats are diff_ and ratio_ pairs** (P1 minus P2, P1 divided by P2)
+- **Decimal odds** from tennis-data.co.uk (not American) — use `decimal_to_implied_prob()`
+- **Filter to 3+ bookmakers** for honest backtesting (23,590 matches qualify)
+- **Odds capped at 50.0 decimal** to remove outliers
+- **Chronological 80/10/10 split**, linear sample weights (0.5 to 1.0)
 
-## Potential Feature Groups
-1. Player ranking (current + trend)
-2. Surface-specific win rate
-3. Recent form (last 10/20 matches)
-4. Head-to-head record
-5. Fatigue (days since last match, sets played recently)
-6. Tournament round / seeding
-7. Age / experience
-8. Serve stats (ace %, double fault %, 1st serve %)
-9. Break point conversion / saving
-10. Indoor vs outdoor
+## Running the Pipeline
+```bash
+# Full pipeline from scratch
+python3 scripts/run_pipeline.py
 
-## Lessons Learned from MLB Project
-- **Use official APIs first** (MLB Stats API was way better than scraping BR)
-- **NEVER run multiple scrapers simultaneously** against the same site
-- **Save progress every 25-50 items** to avoid data loss
-- **Check for data leakage** — season-level stats merged into games caused look-ahead bias in MLB. Always use lagged/shifted data.
-- **Audit with agents** before trusting backtest results
-- **Real odds matter** — flat -110 assumptions are meaningless. Need real historical closing lines.
-- **Cap odds outliers** — rogue sportsbook feeds can have values like +60,000
-- **Filter to games with 3+ books** for honest backtesting
-- **High-conviction picks** (10%+ edge) are where the real money is
+# Or step by step:
+python3 scraper/download_tennis_data_uk.py
+python3 scraper/download_sackmann.py
+python3 scraper/merge_sources.py
+python3 models/feature_engineering.py
+python3 models/train.py
+python3 models/evaluate.py
 
-## Next Steps (for first chat session)
-1. Research and choose data sources (tennis-data.co.uk is likely best starting point — free CSVs with match results AND odds included)
-2. Download historical data
-3. Explore data structure, clean, normalize
-4. Feature engineering
-5. Train initial model
-6. Backtest against real odds
-7. Build dashboard
+# Launch dashboard
+streamlit run dashboard/app.py
+```
+
+## Next Steps
+- Run backtest analysis to measure ROI at various edge thresholds
+- Add live odds integration via The Odds API
+- Hyperparameter optimization with Optuna
+- Add more dashboard pages (matchup predictor, odds comparison)
+- Weekly auto-update pipeline
 
 ## Git Workflow
 Always commit and push after modifications. User prefers seeing changes reflected on GitHub.
 
-## Tech Stack (same as MLB)
+## Tech Stack
 - Python 3.9, CatBoost, XGBoost, pandas, Streamlit, Plotly
-- Odds math: Kelly criterion, American/decimal conversion (reuse from MLB)
+- Odds math: Kelly criterion, decimal/American conversion

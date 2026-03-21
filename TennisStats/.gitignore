@@ -1,0 +1,26 @@
+# Data files (too large for git)
+data/raw/*.csv
+data/raw/*.ndjson
+data/processed/*.csv
+data/odds/*.json
+
+# Model artifacts
+models/saved/*.cbm
+models/saved/*.json
+models/saved/*.csv
+catboost_info/
+
+# Logs
+logs/*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# OS
+.DS_Store
+
+# Env
+.env
