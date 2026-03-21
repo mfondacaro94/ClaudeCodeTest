@@ -153,6 +153,7 @@ def run_backtest(test_df, bankroll, kelly_frac, min_edge, use_best_line):
             continue
 
         k = kelly_fraction(bet_prob, bet_dec, fraction=kelly_frac)
+        k = min(k, 0.05)  # Cap at 5% of bankroll per bet to prevent blow-ups
         kelly_wager = bal_kelly * k
         flat_wager = bankroll * flat_pct
 
@@ -200,8 +201,8 @@ def render():
     with col1:
         bankroll = st.number_input("Starting Bankroll ($)", value=10000, step=1000, min_value=100)
     with col2:
-        kelly_frac = st.slider("Kelly Fraction", 0.05, 1.0, 0.25, 0.05,
-                                help="1.0 = full Kelly (aggressive), 0.25 = quarter Kelly (conservative)")
+        kelly_frac = st.slider("Kelly Fraction", 0.05, 0.50, 0.10, 0.05,
+                                help="0.10 = tenth Kelly (conservative), 0.25 = quarter Kelly. Max bet capped at 5%.")
     with col3:
         min_edge = st.slider("Min Edge to Bet", 0.0, 0.15, 0.03, 0.01,
                               help="Only bet when model edge exceeds this threshold")
@@ -236,9 +237,22 @@ def render():
     drawdown = (peak - bets_kelly) / peak
     max_dd = drawdown.max() * 100
 
-    # Aggregate to daily returns for proper Sharpe calculation
+    # Flat bet ROI (most honest metric)
+    flat_bets_only = bets[bets["flat_wager"] > 0]
+    if len(flat_bets_only) > 0:
+        flat_profit_per_bet = (final_flat - bankroll) / (bankroll * 0.02 * n_bets) * 100 if n_bets > 0 else 0
+    else:
+        flat_profit_per_bet = 0
+
+    # Max drawdown for flat betting
+    bets_flat = bets["bal_flat"].values
+    peak_flat = np.maximum.accumulate(bets_flat)
+    dd_flat = (peak_flat - bets_flat) / peak_flat
+    max_dd_flat = dd_flat.max() * 100
+
+    # Aggregate to daily returns for proper Sharpe calculation (use flat)
     bets["date_day"] = pd.to_datetime(bets["date"]).dt.date
-    daily_bal = bets.groupby("date_day")["bal_kelly"].last()
+    daily_bal = bets.groupby("date_day")["bal_flat"].last()
     daily_returns = daily_bal.pct_change().dropna()
     if len(daily_returns) > 1 and daily_returns.std() > 0:
         sharpe = daily_returns.mean() / daily_returns.std() * np.sqrt(252)
@@ -248,9 +262,9 @@ def render():
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("Total Bets", f"{n_bets}")
     col2.metric("Win Rate", f"{win_rate:.1%}")
-    col3.metric("Kelly P&L", f"${final_kelly - bankroll:+,.0f}", f"{kelly_roi:+.1f}%")
-    col4.metric("Flat P&L", f"${final_flat - bankroll:+,.0f}", f"{flat_roi:+.1f}%")
-    col5.metric("Max Drawdown", f"{max_dd:.1f}%")
+    col3.metric("Flat Bet ROI", f"{flat_roi:+.1f}%", f"${final_flat - bankroll:+,.0f}")
+    col4.metric("Kelly P&L", f"${final_kelly - bankroll:+,.0f}", f"{(final_kelly - bankroll) / bankroll * 100:+.1f}%")
+    col5.metric("Max Drawdown (Flat)", f"{max_dd_flat:.1f}%")
     col6.metric("Sharpe Ratio", f"{sharpe:.2f}")
 
     # Balance Curves
