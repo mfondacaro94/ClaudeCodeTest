@@ -3,23 +3,28 @@
 ## What This Project Is
 ATP tennis match outcome prediction model using a 7-model ensemble (5 CatBoost + 2 XGBoost) trained on historical ATP match data from 2010-2025. Finds profitable betting edges against real bookmaker odds (Pinnacle, Bet365, etc.) using Kelly criterion bet sizing.
 
-## Status: V2 MODEL COMPLETE (audited, profitable at higher edges)
-- **Test Accuracy: 67.5%** | ROC-AUC: 0.740 | Brier: 0.206
-- Test period: 2023-05-25 to 2025-11-16 (6,313 matches)
-- 69,346 total matches (2000-2025), 63,129 ML-ready after feature filtering
-- 111 features (98 diff/ratio + 3 market + 10 context)
-- **V2 key change**: Added Pinnacle no-vig implied probability as a feature.
-  Model learns where the sharpest bookmaker is wrong instead of replicating odds.
-- **Backtest ROI (vs Pinnacle, 6,189 test matches)**:
-  - 5%+ edge: 701 bets, +3.2% ROI
-  - 8%+ edge: 239 bets, +15.6% ROI
-  - 10%+ edge: 143 bets, 62.2% win rate, +40.7% ROI
+## Status: V2.1 MODEL COMPLETE (fully audited, profitable)
+- **Test Accuracy: 67.2%** | ROC-AUC: 0.741 | Brier: 0.205
+- Test period: 2023-05-24 to 2025-11-16 (6,310 matches)
+- 69,346 total matches (2000-2025), 63,094 ML-ready after feature filtering
+- 115 features (102 diff/ratio + 3 market + 10 context)
+- **V2 key change**: Pinnacle no-vig implied probability as feature.
+- **V2.1 fixes**: Fixed win_streak/form_momentum silently dropped, fixed is_home
+  placeholder, fixed dashboard text. Full 3-agent audit confirmed no leakage.
+- **Backtest ROI (vs Pinnacle, 6,187 test matches)**:
+  - 2%+ edge: 2,185 bets, +3.0% ROI
+  - 3%+ edge: 1,487 bets, +5.5% ROI
+  - 5%+ edge: 693 bets, +4.6% ROI
+  - 8%+ edge: 244 bets, +17.0% ROI
+  - 10%+ edge: 131 bets, 63.4% win rate, +50.1% ROI
 - **Backtest ROI (vs Max odds / best line)**:
-  - 5%+ edge: 1,265 bets, +7.1% ROI
-  - 8%+ edge: 491 bets, +12.8% ROI
-  - 10%+ edge: 267 bets, +27.4% ROI
-- **Edge is in underdogs**: favorites -3.7% ROI, underdogs +5.4% ROI at 2%+ edge
-- **Audit note**: V1 had data leakage (raw in-match box score stats). Fixed in V1.1.
+  - 3%+ edge: 2,430 bets, +4.7% ROI
+  - 5%+ edge: 1,251 bets, +8.1% ROI
+  - 8%+ edge: 466 bets, +17.1% ROI
+  - 10%+ edge: 263 bets, +29.1% ROI
+- **Audit note**: V1 had data leakage (raw in-match box scores). Fixed in V1.1.
+  Full audit (3 agents) on V2.1 confirmed: no leakage, correct backtest math,
+  11/11 UFC guide best practices followed.
 
 ## Top Features (by importance)
 1. pinnacle_p1_prob (23.6%) — market baseline

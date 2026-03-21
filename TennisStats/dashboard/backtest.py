@@ -193,7 +193,7 @@ def render():
         return
 
     st.info(f"Simulating bets on **{len(test_df)}** test matches with real bookmaker odds "
-            f"from 3+ sportsbooks. Uses fractional Kelly criterion for bet sizing.")
+            f"(Pinnacle + market). Uses fractional Kelly criterion for bet sizing.")
 
     st.subheader("Settings")
     col1, col2, col3, col4 = st.columns(4)

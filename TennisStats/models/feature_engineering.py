@@ -439,7 +439,8 @@ def main():
 
     stat_cols_to_merge = [c for c in plog.columns if c.startswith(("roll", "surface_", "career_"))
                           or c in ("days_since_last", "matches_last_7d", "matches_last_14d",
-                                   "sets_last_7d", "sets_last_14d")]
+                                   "sets_last_7d", "sets_last_14d",
+                                   "win_streak", "form_momentum")]
 
     for col in stat_cols_to_merge:
         if col in w_stats.columns:
@@ -508,8 +509,43 @@ def main():
             ),
             axis=1,
         )
-        df["w_is_home"] = (df.get("winner_ioc", "") == "").astype(int)  # placeholder
-        df["l_is_home"] = (df.get("loser_ioc", "") == "").astype(int)
+        # Is-home: check if player's country matches tournament location country
+        CITY_TO_COUNTRY = {
+            "melbourne": "AUS", "adelaide": "AUS", "brisbane": "AUS", "sydney": "AUS",
+            "paris": "FRA", "lyon": "FRA", "marseille": "FRA", "montpellier": "FRA", "metz": "FRA",
+            "london": "GBR", "eastbourne": "GBR", "nottingham": "GBR", "queen's club": "GBR",
+            "new york": "USA", "indian wells": "USA", "miami": "USA", "washington": "USA",
+            "cincinnati": "USA", "atlanta": "USA", "dallas": "USA", "winston-salem": "USA",
+            "los cabos": "MEX", "san diego": "USA", "houston": "USA", "newport": "USA",
+            "madrid": "ESP", "barcelona": "ESP", "mallorca": "ESP", "gijon": "ESP",
+            "rome": "ITA", "florence": "ITA", "naples": "ITA", "milan": "ITA", "turin": "ITA",
+            "monte carlo": "MON", "monte-carlo": "MON",
+            "shanghai": "CHN", "beijing": "CHN", "chengdu": "CHN", "zhuhai": "CHN",
+            "tokyo": "JPN", "seoul": "KOR", "dubai": "UAE", "doha": "QAT",
+            "rotterdam": "NED", "s-hertogenbosch": "NED",
+            "halle": "GER", "hamburg": "GER", "munich": "GER", "stuttgart": "GER",
+            "vienna": "AUT", "kitzbuhel": "AUT",
+            "basel": "SUI", "gstaad": "SUI", "geneva": "SUI",
+            "stockholm": "SWE", "bastad": "SWE",
+            "buenos aires": "ARG", "rio de janeiro": "BRA", "santiago": "CHI", "sao paulo": "BRA",
+            "montreal": "CAN", "toronto": "CAN",
+            "umag": "CRO", "sofia": "BUL", "antwerp": "BEL", "bucharest": "ROU",
+            "st. petersburg": "RUS", "moscow": "RUS",
+            "acapulco": "MEX", "bogota": "COL", "cordoba": "ARG",
+            "auckland": "NZL", "pune": "IND", "singapore": "SGP",
+            "astana": "KAZ", "nur-sultan": "KAZ",
+            "tel aviv": "ISR", "beijing": "CHN",
+            "winston salem": "USA", "delray beach": "USA",
+        }
+        def check_home(ioc, location):
+            if not ioc or not location or pd.isna(ioc) or pd.isna(location):
+                return 0
+            loc = str(location).strip().lower()
+            country = CITY_TO_COUNTRY.get(loc, "")
+            return 1 if country == ioc else 0
+
+        df["w_is_home"] = df.apply(lambda r: check_home(r.get("winner_ioc"), r.get("Location")), axis=1)
+        df["l_is_home"] = df.apply(lambda r: check_home(r.get("loser_ioc"), r.get("Location")), axis=1)
 
     # --- Balance: randomly assign P1/P2 ---
     logger.info("Balancing rows (random P1/P2 assignment)...")
