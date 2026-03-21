@@ -3,14 +3,22 @@
 ## What This Project Is
 ATP tennis match outcome prediction model using a 7-model ensemble (5 CatBoost + 2 XGBoost) trained on historical ATP match data from 2010-2025. Finds profitable betting edges against real bookmaker odds (Pinnacle, Bet365, etc.) using Kelly criterion bet sizing.
 
-## Status: V2 MODEL COMPLETE (audited, profitable)
-- **Test Accuracy: 67.6%** | ROC-AUC: 0.742 | Brier: 0.206
-- Test period: 2024-06-17 to 2025-11-16 (3,694 matches)
-- 40,766 total matches, 36,936 ML-ready after feature filtering
+## Status: V2 MODEL COMPLETE (audited, profitable at higher edges)
+- **Test Accuracy: 67.5%** | ROC-AUC: 0.740 | Brier: 0.206
+- Test period: 2023-05-25 to 2025-11-16 (6,313 matches)
+- 69,346 total matches (2000-2025), 63,129 ML-ready after feature filtering
 - 111 features (98 diff/ratio + 3 market + 10 context)
 - **V2 key change**: Added Pinnacle no-vig implied probability as a feature.
   Model learns where the sharpest bookmaker is wrong instead of replicating odds.
-- **Backtest ROI**: +3.2% flat bet (all edges vs Pinnacle), +15.5% at 2%+ edge, +18.7% at 3%+ edge
+- **Backtest ROI (vs Pinnacle, 6,189 test matches)**:
+  - 5%+ edge: 701 bets, +3.2% ROI
+  - 8%+ edge: 239 bets, +15.6% ROI
+  - 10%+ edge: 143 bets, 62.2% win rate, +40.7% ROI
+- **Backtest ROI (vs Max odds / best line)**:
+  - 5%+ edge: 1,265 bets, +7.1% ROI
+  - 8%+ edge: 491 bets, +12.8% ROI
+  - 10%+ edge: 267 bets, +27.4% ROI
+- **Edge is in underdogs**: favorites -3.7% ROI, underdogs +5.4% ROI at 2%+ edge
 - **Audit note**: V1 had data leakage (raw in-match box score stats). Fixed in V1.1.
 
 ## Top Features (by importance)
