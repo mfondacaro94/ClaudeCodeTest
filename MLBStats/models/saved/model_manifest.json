@@ -5,6 +5,8 @@
     "tz_change_abs",
     "home_sp_is_lefty",
     "away_sp_is_lefty",
+    "home_sp_pre_era",
+    "away_sp_pre_era",
     "home_bp_ip_last3",
     "away_bp_ip_last3",
     "ump_avg_runs",
@@ -69,6 +71,8 @@
     "ratio_team_bat_ops_plus",
     "diff_sp_is_lefty",
     "ratio_sp_is_lefty",
+    "diff_sp_pre_era",
+    "ratio_sp_pre_era",
     "diff_bp_ip_last3",
     "ratio_bp_ip_last3",
     "diff_rest_days",
@@ -88,14 +92,14 @@
     43
   ],
   "metrics": {
-    "accuracy": 0.5698,
-    "log_loss": 0.6792,
-    "roc_auc": 0.5832,
-    "brier_score": 0.2431,
+    "accuracy": 0.5605,
+    "log_loss": 0.6798,
+    "roc_auc": 0.5738,
+    "brier_score": 0.2435,
     "n_test": 2487,
     "n_models": 7,
     "home_win_rate_actual": 0.542,
-    "home_win_rate_predicted": 0.5333
+    "home_win_rate_predicted": 0.5303
   },
   "train_size": 19893,
   "val_size": 2487,

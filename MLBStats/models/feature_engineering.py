@@ -187,10 +187,10 @@ def build_sp_features(games: pd.DataFrame, pitcher_feats: pd.DataFrame) -> pd.Da
 
         # ONLY use pre-game info — NOT game-day stats (ip, er, so, bb, hr, pitches)
         # Those are outcomes, not predictors — using them is data leakage!
+        # era_cume from MLB API may not exist; we compute it below from game logs
         rename = {
             "player_id": f"{prefix}_sp_id",
             "throws": f"{prefix}_sp_throws",
-            "era_cume": f"{prefix}_sp_era_cume",
         }
         available = {k: v for k, v in rename.items() if k in side.columns}
         side = side[["date", "home_team", "away_team"] + list(available.keys())]
@@ -205,9 +205,23 @@ def build_sp_features(games: pd.DataFrame, pitcher_feats: pd.DataFrame) -> pd.Da
             games[f"{prefix}_sp_is_lefty"] = (games[col] == "L").astype(int)
             games = games.drop(columns=[col])
 
-    # Note: season-level pitcher stats (from BR) use different IDs than MLB API game logs.
-    # We rely on the game-level stats (IP, ER, SO, BB, pitches, era_cume) from the API
-    # which are already merged above and more granular than season averages.
+    # Compute pre-game ERA from game logs (shifted to exclude current game)
+    sp_all = gl[gl["is_start"] == True].copy()
+    sp_all["ip"] = pd.to_numeric(sp_all["ip"], errors="coerce").fillna(0)
+    sp_all["er"] = pd.to_numeric(sp_all["er"], errors="coerce").fillna(0)
+    sp_all = sp_all.sort_values(["player_id", "date"])
+
+    # Cumulative IP and ER BEFORE this game (shift by 1)
+    sp_all["cum_ip"] = sp_all.groupby("player_id")["ip"].transform(lambda x: x.shift(1).expanding().sum())
+    sp_all["cum_er"] = sp_all.groupby("player_id")["er"].transform(lambda x: x.shift(1).expanding().sum())
+    sp_all["pre_game_era"] = np.where(sp_all["cum_ip"] > 0, sp_all["cum_er"] / sp_all["cum_ip"] * 9, np.nan)
+
+    for prefix, is_home_val in [("home", True), ("away", False)]:
+        era_col = f"{prefix}_sp_pre_era"
+        side_era = sp_all[sp_all["is_home"] == is_home_val][["date", "home_team", "away_team", "pre_game_era"]].copy()
+        side_era = side_era.drop_duplicates(subset=["date", "home_team", "away_team"], keep="first")
+        side_era = side_era.rename(columns={"pre_game_era": era_col})
+        games = games.merge(side_era, on=["date", "home_team", "away_team"], how="left")
 
     home_matched = games.get("home_sp_id", pd.Series()).notna().sum()
     away_matched = games.get("away_sp_id", pd.Series()).notna().sum()
@@ -362,7 +376,12 @@ def build_rest_and_series_features(games: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_team_batter_aggregates(batters: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate batter stats per team-season (lineup strength proxy)."""
+    """Aggregate batter stats per team-season, shifted by 1 year to prevent leakage.
+
+    Uses PRIOR year's stats as a proxy for current roster quality.
+    A 2024 game uses 2023 end-of-season stats (fully known at game time).
+    This avoids look-ahead bias from using current-year totals.
+    """
     if batters.empty:
         return pd.DataFrame()
 
@@ -382,7 +401,6 @@ def build_team_batter_aggregates(batters: pd.DataFrame) -> pd.DataFrame:
     if not available:
         return pd.DataFrame()
 
-    # Sum counting stats, weighted-average rate stats
     sum_stats = [c for c in available if c in ("b_war", "b_hr", "b_rbi", "b_sb")]
     rate_stats = [c for c in available if c not in sum_stats]
 
@@ -390,7 +408,7 @@ def build_team_batter_aggregates(batters: pd.DataFrame) -> pd.DataFrame:
     for c in sum_stats:
         agg_dict[c] = "sum"
     for c in rate_stats:
-        agg_dict[c] = "mean"  # approximate; proper weighting would use PA
+        agg_dict[c] = "mean"
 
     grouped = batters.groupby(["team_name_abbr", "year_id"]).agg(agg_dict).reset_index()
     grouped = grouped.rename(columns={"team_name_abbr": "team", "year_id": "year"})
@@ -399,6 +417,9 @@ def build_team_batter_aggregates(batters: pd.DataFrame) -> pd.DataFrame:
     for col in grouped.columns:
         if col not in ("team", "year"):
             grouped[col] = pd.to_numeric(grouped[col], errors="coerce")
+
+    # Shift year forward by 1: 2023 stats are used for 2024 games
+    grouped["year"] = grouped["year"] + 1
 
     return grouped
 
@@ -615,6 +636,7 @@ def create_ml_ready(master: pd.DataFrame) -> pd.DataFrame:
                         "travel_dist_miles", "tz_change_abs", "tz_change_hours",
                         "home_rest_days", "away_rest_days", "series_game_num",
                         "home_sp_is_lefty", "away_sp_is_lefty",
+                        "home_sp_pre_era", "away_sp_pre_era",
                         "home_bp_ip_last3", "away_bp_ip_last3",
                         "ump_avg_runs", "bpf", "ppf",
                     )]
